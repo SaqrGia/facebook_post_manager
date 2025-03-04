@@ -1,0 +1,72 @@
+name: facebook_post_manager
+description: A professional Facebook page management application built with Flutter.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # State Management
+  provider: ^6.1.2
+
+  # UI Components
+  google_fonts: 4.0.4
+  flutter_svg: ^2.0.9
+  shimmer: ^3.0.0
+  cached_network_image: ^3.3.1
+
+  #Multimedia
+  image_picker: ^1.1.2
+  file_picker: ^8.0.0+1
+  path: ^1.8.3
+  mime: ^1.0.6
+  video_player: ^2.9.2
+  video_thumbnail: ^0.5.3
+
+  # Authentication & Storage
+  flutter_facebook_auth: ^5.0.11
+  flutter_secure_storage: ^8.1.0
+  shared_preferences: ^2.2.3
+
+  # Networking & Data
+  http: ^0.13.6
+  json_annotation: ^4.8.1
+
+  # Utilities
+  intl: ^0.18.1
+  logger: ^2.0.2
+  url_launcher: ^6.2.4
+  path_provider: ^2.1.4
+  package_info_plus: ^5.0.1
+  http_parser: ^4.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.3
+  build_runner: ^2.4.8
+  json_serializable: ^6.7.1
+  flutter_launcher_icons: ^0.13.1
+  flutter_native_splash: ^2.3.10
+
+flutter:
+  uses-material-design: true
+  
+  
+
+flutter_native_splash:
+  color: "#FFFFFF"
+  image: assets/images/splash.png
+  android_12:
+    image: assets/images/splash.png
+    
+flutter_icons:
+  android: "launcher_icon"
+  ios: true
+  image_path: "assets/icons/app_icon.png"
