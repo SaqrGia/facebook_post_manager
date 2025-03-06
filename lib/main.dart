@@ -4,9 +4,12 @@ import 'package:provider/provider.dart';
 import 'config/theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/pages_provider.dart';
+import 'providers/whatsapp_provider.dart'; // أضفنا هذا
+import 'services/whatsapp_service.dart'; // أضفنا هذا
 import 'screens/auth/login_screen.dart';
 import 'screens/posts/create_post_screen.dart';
-import 'screens/pages/pages_screen.dart'; // أضفنا هذا السطر
+import 'screens/pages/pages_screen.dart';
+import 'screens/whatsapp/whatsapp_setup_screen.dart'; // أضفنا هذا
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -31,9 +34,15 @@ class MyApp extends StatelessWidget {
             authProvider: auth,
           ),
         ),
+        // إضافة مزود واتساب
+        ChangeNotifierProvider<WhatsAppProvider>(
+          create: (_) => WhatsAppProvider(
+            service: WhatsAppService(),
+          ),
+        ),
       ],
       child: MaterialApp(
-        title: 'مدير صفحات فيسبوك',
+        title: 'مدير صفحات التواصل الاجتماعي',
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         localizationsDelegates: const [
@@ -47,6 +56,8 @@ class MyApp extends StatelessWidget {
           '/login': (context) => const LoginScreen(),
           '/create_post': (context) => const CreatePostScreen(),
           '/pages': (context) => const PagesScreen(),
+          // إضافة مسار شاشة إعداد واتساب
+          '/whatsapp_setup': (context) => const WhatsAppSetupScreen(),
         },
       ),
     );
