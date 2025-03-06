@@ -20,7 +20,7 @@ dependencies:
   flutter_svg: ^2.0.9
   shimmer: ^3.0.0
   cached_network_image: ^3.3.1
-
+  qr_flutter: ^4.1.0
   #Multimedia
   image_picker: ^1.1.2
   file_picker: ^8.0.0+1
