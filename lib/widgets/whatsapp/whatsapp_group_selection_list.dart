@@ -65,7 +65,7 @@ class WhatsAppGroupSelectionList extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     OutlinedButton.icon(
-                      onPressed: () => provider.loadGroups(),
+                      onPressed: () => provider.loadGroups(forceRefresh: true),
                       icon: const Icon(Icons.refresh),
                       label: const Text('تحديث'),
                       style: OutlinedButton.styleFrom(
@@ -145,7 +145,7 @@ class WhatsAppGroupSelectionList extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
                   OutlinedButton.icon(
-                    onPressed: () => provider.loadGroups(),
+                    onPressed: () => provider.loadGroups(forceRefresh: true),
                     icon: const Icon(Icons.refresh),
                     label: const Text('تحديث'),
                     style: OutlinedButton.styleFrom(
@@ -238,6 +238,21 @@ class _WhatsAppGroupSelectionTile extends StatelessWidget {
                   child: const Text(
                     'غير نشطة',
                     style: TextStyle(fontSize: 10, color: Colors.orange),
+                  ),
+                ),
+              ] else ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.green.withOpacity(0.5)),
+                  ),
+                  child: const Text(
+                    'نشطة',
+                    style: TextStyle(fontSize: 10, color: Colors.green),
                   ),
                 ),
               ],

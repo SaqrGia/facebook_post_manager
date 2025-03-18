@@ -8,6 +8,7 @@ import '../../widgets/posts/post_form.dart';
 import '../../widgets/pages/page_selection_list.dart';
 import '../../widgets/instagram_selection_list.dart';
 import '../../widgets/whatsapp/whatsapp_group_selection_list.dart'; // أضفنا هذا
+import 'package:mime/mime.dart';
 
 class CreatePostScreen extends StatefulWidget {
   const CreatePostScreen({Key? key}) : super(key: key);
@@ -69,6 +70,8 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     });
   }
 
+  // تعديلات لملف lib/screens/posts/create_post_screen.dart - إضافة هذه الدالة
+
   Future<void> _createPost() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -101,8 +104,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _isSubmitting = true);
 
     try {
-      // النشر على Facebook و Instagram
+      // معالجة منفصلة للفيسبوك/انستغرام وواتساب
       bool fbIgSuccess = true;
+      bool waSuccess = true;
+
+      // النشر على فيسبوك وانستغرام
       if (pagesProvider.selectedPages.isNotEmpty ||
           pagesProvider.selectedInstagramAccounts.isNotEmpty) {
         fbIgSuccess = await pagesProvider.createPostOnSelectedPages(
@@ -114,15 +120,16 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       }
 
       // النشر على واتساب
-      bool waSuccess = true;
       if (whatsappProvider.selectedGroupIds.isNotEmpty) {
-        final results = await whatsappProvider.sendPostToGroups(
-          message: _messageController.text,
-          mediaFile:
-              _selectedMedia?.isNotEmpty == true ? _selectedMedia!.first : null,
-        );
+        // إرسال للمجموعات المحددة
+        final results = await _sendToWhatsApp(
+            whatsappProvider: whatsappProvider,
+            message: _messageController.text,
+            mediaFile: _selectedMedia?.isNotEmpty == true
+                ? _selectedMedia!.first
+                : null);
 
-        // إذا فشل النشر على جميع المجموعات
+        // التحقق من نجاح النشر على الأقل لمجموعة واحدة
         waSuccess = results.values.any((success) => success);
       }
 
@@ -172,6 +179,71 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       if (mounted) {
         setState(() => _isSubmitting = false);
       }
+    }
+  }
+
+// إضافة دالة مساعدة خاصة لإرسال المحتوى إلى واتساب
+  Future<Map<String, bool>> _sendToWhatsApp({
+    required WhatsAppProvider whatsappProvider,
+    required String message,
+    File? mediaFile,
+  }) async {
+    Map<String, bool> results = {};
+
+    try {
+      // التحقق من وجود فيديو
+      bool isVideo = false;
+      if (mediaFile != null) {
+        final mimeType = await lookupMimeType(mediaFile.path) ?? '';
+        isVideo = mimeType.startsWith('video/');
+
+        // إذا كان المحتوى فيديو، نعرض إشعاراً
+        if (isVideo) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'جاري إرسال الفيديو إلى مجموعات واتساب، قد يستغرق الأمر وقتاً طويلاً...'),
+              duration: Duration(seconds: 10),
+            ),
+          );
+        }
+      }
+
+      // إرسال لكل مجموعة على حدة
+      for (final groupId in whatsappProvider.selectedGroupIds) {
+        try {
+          // استخدام الدالة المباشرة لإرسال الرسالة/الملف
+          bool success = false;
+
+          if (mediaFile != null) {
+            // إرسال الوسائط
+            success = await whatsappProvider.sendPostToGroup(
+              groupId: groupId,
+              message: message,
+              mediaFile: mediaFile,
+            );
+          } else {
+            // إرسال رسالة نصية فقط
+            success = await whatsappProvider.sendPostToGroup(
+              groupId: groupId,
+              message: message,
+            );
+          }
+
+          results[groupId] = success;
+
+          // انتظار قصير بين الإرسالات
+          await Future.delayed(const Duration(seconds: 2));
+        } catch (e) {
+          print('خطأ في إرسال المحتوى إلى المجموعة $groupId: $e');
+          results[groupId] = false;
+        }
+      }
+
+      return results;
+    } catch (e) {
+      print('خطأ عام في إرسال المحتوى إلى واتساب: $e');
+      return {};
     }
   }
 

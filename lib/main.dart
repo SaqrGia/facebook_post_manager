@@ -4,12 +4,13 @@ import 'package:provider/provider.dart';
 import 'config/theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/pages_provider.dart';
-import 'providers/whatsapp_provider.dart'; // أضفنا هذا
-import 'services/whatsapp_service.dart'; // أضفنا هذا
+import 'providers/whatsapp_provider.dart';
+import 'services/whatsapp_service.dart';
 import 'screens/auth/login_screen.dart';
+import 'screens/auth/splash_screen.dart'; // إضافة استيراد شاشة البدء
 import 'screens/posts/create_post_screen.dart';
 import 'screens/pages/pages_screen.dart';
-import 'screens/whatsapp/whatsapp_setup_screen.dart'; // أضفنا هذا
+import 'screens/whatsapp/whatsapp_setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +35,6 @@ class MyApp extends StatelessWidget {
             authProvider: auth,
           ),
         ),
-        // إضافة مزود واتساب
         ChangeNotifierProvider<WhatsAppProvider>(
           create: (_) => WhatsAppProvider(
             service: WhatsAppService(),
@@ -51,12 +51,12 @@ class MyApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         supportedLocales: const [Locale('ar')],
-        initialRoute: '/login',
+        initialRoute: '/splash', // تغيير المسار الأولي إلى شاشة البدء
         routes: {
+          '/splash': (context) => const SplashScreen(), // إضافة مسار شاشة البدء
           '/login': (context) => const LoginScreen(),
           '/create_post': (context) => const CreatePostScreen(),
           '/pages': (context) => const PagesScreen(),
-          // إضافة مسار شاشة إعداد واتساب
           '/whatsapp_setup': (context) => const WhatsAppSetupScreen(),
         },
       ),

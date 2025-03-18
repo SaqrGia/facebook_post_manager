@@ -22,11 +22,32 @@ class AuthProvider with ChangeNotifier {
     notifyListeners();
 
     try {
-      if (await _authService.isLoggedIn()) {
-        _currentUser = await _authService.getCurrentUser();
+      // تحسين: استخدام getAccessToken أولاً للتحقق من وجود رمز وصول مخزن
+      final token = await _authService.getAccessToken();
+      if (token != null) {
+        // استخدام isLoggedIn للتحقق من صلاحية الرمز
+        final isTokenValid = await _authService.isLoggedIn();
+
+        if (isTokenValid) {
+          _currentUser = await _authService.getCurrentUser();
+
+          // إذا لم نستطع استرداد بيانات المستخدم، نقوم بتسجيل الخروج
+          if (_currentUser == null) {
+            await _authService.logout();
+          }
+        } else {
+          // إذا انتهت صلاحية الرمز، نقوم بتسجيل الخروج
+          await _authService.logout();
+        }
       }
     } catch (e) {
       _error = e.toString();
+      // في حالة حدوث خطأ، نحاول تسجيل الخروج لإعادة ضبط الحالة
+      try {
+        await _authService.logout();
+      } catch (_) {
+        // تجاهل أي خطأ في عملية تسجيل الخروج
+      }
     } finally {
       _isLoading = false;
       notifyListeners();

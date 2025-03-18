@@ -10,7 +10,7 @@ WhatsAppGroup _$WhatsAppGroupFromJson(Map<String, dynamic> json) =>
     WhatsAppGroup(
       id: json['id'] as String,
       name: json['name'] as String,
-      participants: json['participants'] as int,
+      participants: (json['participants'] as num).toInt(),
       isContact: json['isContact'] as bool?,
     );
 

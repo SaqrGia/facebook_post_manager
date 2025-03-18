@@ -1,9 +1,8 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 import '../../providers/whatsapp_provider.dart';
 import '../../widgets/common/loading_indicator.dart';
-import '../../config/app_config.dart';
 
 class WhatsAppSetupScreen extends StatefulWidget {
   const WhatsAppSetupScreen({Key? key}) : super(key: key);
@@ -14,14 +13,48 @@ class WhatsAppSetupScreen extends StatefulWidget {
 
 class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
   bool _isCheckingStatus = false;
-  bool _useDirectUrl = true; // استخدام رابط مباشر لصورة QR
 
   @override
   void initState() {
     super.initState();
-    _checkConnectionStatus();
+    _loadInitialData();
   }
 
+  // تحميل البيانات الأولية
+  Future<void> _loadInitialData() async {
+    setState(() => _isCheckingStatus = true);
+
+    final provider = context.read<WhatsAppProvider>();
+    final isConnected = await provider.checkConnection();
+
+    if (!mounted) return;
+
+    if (isConnected) {
+      // إذا كان متصلًا، انتقل إلى الشاشة الرئيسية
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('متصل بواتساب بالفعل!'),
+          backgroundColor: Colors.green,
+        ),
+      );
+
+      // جلب المجموعات
+      await provider.loadGroups();
+
+      if (mounted) {
+        Navigator.pop(context);
+      }
+    } else {
+      // جلب رمز QR
+      await provider.getQRCode();
+    }
+
+    if (mounted) {
+      setState(() => _isCheckingStatus = false);
+    }
+  }
+
+  // التحقق من حالة الاتصال
   Future<void> _checkConnectionStatus() async {
     setState(() => _isCheckingStatus = true);
 
@@ -31,21 +64,26 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
     if (!mounted) return;
 
     if (isConnected) {
-      // إذا كان متصلاً، انتقل إلى الشاشة الرئيسية أو جلب المجموعات
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('متصل بواتساب بالفعل!'),
+          content: Text('تم الاتصال بنجاح!'),
           backgroundColor: Colors.green,
         ),
       );
-      provider.loadGroups();
+
+      // جلب المجموعات
+      await provider.loadGroups();
 
       if (mounted) {
         Navigator.pop(context);
       }
     } else {
-      // إذا لم يكن متصلاً، احصل على رمز QR
-      await provider.getQRCode();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لم يتم الاتصال، تأكد من مسح رمز QR'),
+          backgroundColor: Colors.orange,
+        ),
+      );
     }
 
     if (mounted) {
@@ -59,17 +97,6 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
       appBar: AppBar(
         title: const Text('إعداد واتساب'),
         actions: [
-          // عرض زر تبديل طريقة عرض QR
-          IconButton(
-            icon: Icon(_useDirectUrl ? Icons.qr_code : Icons.image),
-            onPressed: () {
-              setState(() {
-                _useDirectUrl = !_useDirectUrl;
-              });
-            },
-            tooltip:
-                _useDirectUrl ? 'تبديل لوضع QR المباشر' : 'تبديل لرابط الصورة',
-          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             tooltip: 'إعادة تشغيل العميل',
@@ -83,7 +110,8 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                   ),
                 );
               }
-              // عد للتحقق بعد فترة
+
+              // التحقق مرة أخرى بعد فترة
               Future.delayed(const Duration(seconds: 5), () {
                 if (mounted) {
                   provider.getQRCode();
@@ -140,29 +168,6 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                   );
                 }
 
-                // التحقق من أن لدينا على الأقل رمز QR أو صورة QR
-                if (provider.qrCode == null && !_useDirectUrl) {
-                  return Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(Icons.qr_code, size: 48),
-                        const SizedBox(height: 16),
-                        const Text(
-                          'لم يتم العثور على رمز QR.\nيرجى إعادة تشغيل العميل أو الانتظار لحظات.',
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 16),
-                        ElevatedButton(
-                          onPressed: () => provider.getQRCode(),
-                          child: const Text('تحديث'),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                // عرض رمز QR
                 return Center(
                   child: SingleChildScrollView(
                     padding: const EdgeInsets.all(24),
@@ -179,10 +184,12 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                         ),
                         const SizedBox(height: 8),
                         const Text(
-                          'افتح واتساب على هاتفك > انقر على النقاط الثلاث > واتساب ويب > مسح الرمز',
+                          'افتح واتساب على هاتفك > الإعدادات > الأجهزة المرتبطة > ربط جهاز',
                           textAlign: TextAlign.center,
                         ),
                         const SizedBox(height: 24),
+
+                        // عرض رمز QR
                         Container(
                           padding: const EdgeInsets.all(16),
                           decoration: BoxDecoration(
@@ -198,9 +205,35 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                               ),
                             ],
                           ),
-                          child: _useDirectUrl
-                              // استخدام رابط مباشر للصورة QR
-                              ? Image.network(
+                          child: provider.qrCode != null
+                              // استخدام نص QR إذا كان متاحاً
+                              ? AspectRatio(
+                                  aspectRatio: 1,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(8),
+                                    width: 250,
+                                    height: 250,
+                                    child: Image.memory(
+                                      const Base64Decoder().convert(
+                                          provider.qrCode!.replaceAll(
+                                              RegExp(r'data:image/\w+;base64,'),
+                                              '')),
+                                      fit: BoxFit.contain,
+                                      errorBuilder:
+                                          (context, error, stackTrace) {
+                                        return const Center(
+                                          child: Text(
+                                              'غير قادر على عرض QR من النص',
+                                              textAlign: TextAlign.center,
+                                              style:
+                                                  TextStyle(color: Colors.red)),
+                                        );
+                                      },
+                                    ),
+                                  ),
+                                )
+                              // محاولة تحميل صورة QR من URL
+                              : Image.network(
                                   provider.getQRImageUrl(),
                                   width: 250,
                                   height: 250,
@@ -212,16 +245,21 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                                             color: Colors.red, size: 48),
                                         const SizedBox(height: 8),
                                         const Text('فشل تحميل صورة QR',
-                                            textAlign: TextAlign.center),
-                                        const SizedBox(height: 8),
+                                            textAlign: TextAlign.center,
+                                            style: TextStyle(
+                                                fontSize: 16,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.red)),
+                                        const SizedBox(height: 16),
+                                        const Text(
+                                          'تأكد من:\n- اتصال الإنترنت\n- إعدادات API في تكوين التطبيق\n- تأكد من تفعيل الخدمة في MayTapi',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(fontSize: 14),
+                                        ),
+                                        const SizedBox(height: 16),
                                         ElevatedButton(
-                                          onPressed: () {
-                                            setState(() {
-                                              _useDirectUrl = false;
-                                            });
-                                          },
-                                          child:
-                                              const Text('جرب الطريقة الثانية'),
+                                          onPressed: () => provider.getQRCode(),
+                                          child: const Text('إعادة المحاولة'),
                                         ),
                                       ],
                                     );
@@ -246,22 +284,7 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                                       ),
                                     );
                                   },
-                                )
-                              // استخدام QrImage من نص مباشر
-                              : (provider.qrCode != null
-                                  ? QrImageView(
-                                      data: provider.qrCode!,
-                                      version: QrVersions.auto,
-                                      size: 250.0,
-                                      backgroundColor: Colors.white,
-                                    )
-                                  : const SizedBox(
-                                      width: 250,
-                                      height: 250,
-                                      child: Center(
-                                        child: Text('رمز QR غير متاح حاليًا'),
-                                      ),
-                                    )),
+                                ),
                         ),
                         const SizedBox(height: 16),
                         const Padding(
@@ -277,13 +300,7 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
                             TextButton.icon(
-                              onPressed: () {
-                                provider.getQRCode();
-                                // تحديث الصفحة لتحميل صورة QR الجديدة
-                                if (_useDirectUrl) {
-                                  setState(() {});
-                                }
-                              },
+                              onPressed: () => provider.getQRCode(),
                               icon: const Icon(Icons.refresh),
                               label: const Text('تحديث الرمز'),
                             ),

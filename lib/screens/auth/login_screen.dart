@@ -15,18 +15,26 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _isLoading = false;
 
   Future<void> _login() async {
+    // تحقق مما إذا كان المستخدم مسجلاً بالفعل
+    final authProvider = context.read<AuthProvider>();
+
+    if (authProvider.isLoggedIn) {
+      if (!mounted) return;
+      Navigator.pushReplacementNamed(context, '/create_post');
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
-      final success = await context.read<AuthProvider>().login();
-      if (!mounted) return; // تم إضافة هذا السطر
+      final success = await authProvider.login();
+      if (!mounted) return;
 
       if (success) {
         Navigator.pushReplacementNamed(context, '/create_post');
       }
     } finally {
       if (mounted) {
-        // وهذا أيضاً
         setState(() => _isLoading = false);
       }
     }
@@ -69,7 +77,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 48),
                   Consumer<AuthProvider>(
                     builder: (context, authProvider, _) {
-                      if (_isLoading) {
+                      if (_isLoading || authProvider.isLoading) {
                         return const LoadingIndicator();
                       }
 
