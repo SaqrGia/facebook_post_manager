@@ -179,31 +179,76 @@ class WhatsAppService {
         },
       );
 
+      print('استجابة جلب المجموعات: ${response.statusCode}');
+      print('محتوى الاستجابة: ${response.body}');
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
         if (data['success'] != true || !data.containsKey('data')) {
+          print('تم استلام استجابة ناجحة ولكن البيانات غير صالحة');
+          print('استجابة API: $data');
           return [];
         }
 
         final List<dynamic> groupsData = data['data'];
         print('عدد المجموعات المستلمة: ${groupsData.length}');
 
+        // توضيح محتوى البيانات للتشخيص
+        if (groupsData.isNotEmpty) {
+          print('عينة من بيانات المجموعة الأولى: ${groupsData[0]}');
+        }
+
+        // معالجة أكثر مرونة للبيانات
         return groupsData.map((group) {
-          final participants = group['participants'] is List
-              ? (group['participants'] as List).length
-              : 0;
+          // تحديد عدد المشاركين
+          int participants = 0;
+          if (group['participants'] is List) {
+            participants = (group['participants'] as List).length;
+          } else if (group.containsKey('participants_count')) {
+            participants = group['participants_count'] ?? 0;
+          }
+
+          // استخراج معرف المجموعة
+          String groupId = '';
+          if (group['id'] != null) {
+            groupId = group['id'].toString();
+          } else if (group.containsKey('_serialized')) {
+            groupId = group['_serialized'].toString();
+          } else if (group.containsKey('chatId')) {
+            groupId = group['chatId'].toString();
+          }
+
+          if (groupId.isEmpty) {
+            print('تحذير: مجموعة بدون معرف: $group');
+            groupId = 'unknown_${DateTime.now().millisecondsSinceEpoch}';
+          }
+
+          // استخراج اسم المجموعة
+          String groupName = group['name'] ?? 'مجموعة بدون اسم';
+          if (groupName.isEmpty && group.containsKey('subject')) {
+            groupName = group['subject'] ?? 'مجموعة بدون اسم';
+          }
+
+          // تحديد ما إذا كانت المجموعة نشطة
+          bool isContact = group['isContact'] == true;
+          if (!isContact && group.containsKey('isGroup')) {
+            isContact = !(group['isGroup'] == true);
+          }
 
           return WhatsAppGroup(
-            id: group['id'].toString(),
-            name: group['name'] ?? 'مجموعة بدون اسم',
+            id: groupId,
+            name: groupName,
             participants: participants,
-            isContact: false,
+            isContact: isContact,
           );
         }).toList();
       } else {
+        print('فشل في جلب مجموعات واتساب، رمز الحالة: ${response.statusCode}');
+        print('محتوى الاستجابة: ${response.body}');
+
         throw WhatsAppApiException(
-          'فشل في جلب مجموعات واتساب',
+          'فشل في جلب مجموعات واتساب (${response.statusCode}): ${response.body}',
           statusCode: response.statusCode,
         );
       }
@@ -354,7 +399,7 @@ class WhatsAppService {
   Future<bool> sendPost({
     required String phoneId,
     required String groupId,
-    required String message,
+    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
     File? mediaFile,
   }) async {
     try {
@@ -371,12 +416,15 @@ class WhatsAppService {
               'تحذير: حجم الملف كبير (${(fileSize / (1024 * 1024)).toStringAsFixed(2)} ميجابايت) وقد يفشل الإرسال');
         }
 
-        print('إرسال وسائط مع نص إلى المجموعة: $groupId');
+        print('إرسال وسائط إلى المجموعة: $groupId');
+        // إرسال الوسائط مع أو بدون تعليق (حسب ما إذا كان النص فارغًا أم لا)
         return await sendMedia(
           phoneId: phoneId,
           groupId: groupId,
           file: mediaFile,
-          caption: message.isNotEmpty ? message : null,
+          caption: message.isNotEmpty
+              ? message
+              : null, // هذا يعني أنه يمكن إرسال الوسائط بدون نص
         );
       } else if (message.isNotEmpty) {
         // إرسال رسالة نصية فقط

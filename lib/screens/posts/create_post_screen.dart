@@ -93,8 +93,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     }
 
     // التحقق من وجود محتوى للنشر (نص أو وسائط)
-    if (_messageController.text.isEmpty &&
-        (_selectedMedia == null || _selectedMedia!.isEmpty)) {
+    bool hasMedia = _selectedMedia != null && _selectedMedia!.isNotEmpty;
+    bool hasText = _messageController.text.isNotEmpty;
+
+    if (!hasMedia && !hasText) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('يجب إدخال نص أو اختيار وسائط على الأقل')),
       );
@@ -185,16 +187,29 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 // إضافة دالة مساعدة خاصة لإرسال المحتوى إلى واتساب
   Future<Map<String, bool>> _sendToWhatsApp({
     required WhatsAppProvider whatsappProvider,
-    required String message,
+    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
     File? mediaFile,
   }) async {
     Map<String, bool> results = {};
 
     try {
+      // التحقق من وجود وسائط
+      bool hasMedia = mediaFile != null;
+
+      // التحقق من وجود محتوى للإرسال (إما وسائط أو نص)
+      if (!hasMedia && message.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('يجب توفير نص أو وسائط للإرسال لمجموعات واتساب'),
+          ),
+        );
+        return {};
+      }
+
       // التحقق من وجود فيديو
       bool isVideo = false;
-      if (mediaFile != null) {
-        final mimeType = await lookupMimeType(mediaFile.path) ?? '';
+      if (hasMedia) {
+        final mimeType = lookupMimeType(mediaFile!.path) ?? '';
         isVideo = mimeType.startsWith('video/');
 
         // إذا كان المحتوى فيديو، نعرض إشعاراً
@@ -213,22 +228,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       for (final groupId in whatsappProvider.selectedGroupIds) {
         try {
           // استخدام الدالة المباشرة لإرسال الرسالة/الملف
-          bool success = false;
-
-          if (mediaFile != null) {
-            // إرسال الوسائط
-            success = await whatsappProvider.sendPostToGroup(
-              groupId: groupId,
-              message: message,
-              mediaFile: mediaFile,
-            );
-          } else {
-            // إرسال رسالة نصية فقط
-            success = await whatsappProvider.sendPostToGroup(
-              groupId: groupId,
-              message: message,
-            );
-          }
+          bool success = await whatsappProvider.sendPostToGroup(
+            groupId: groupId,
+            message: message,
+            mediaFile: mediaFile,
+          );
 
           results[groupId] = success;
 

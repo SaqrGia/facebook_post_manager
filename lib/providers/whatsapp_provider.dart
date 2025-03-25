@@ -96,18 +96,27 @@ class WhatsAppProvider with ChangeNotifier {
       final targetPhoneId =
           phoneId ?? _activePhoneId ?? AppConfig.maytapiDefaultPhoneId;
 
+      print('التحقق من اتصال واتساب باستخدام معرف الهاتف: $targetPhoneId');
+
       _isConnected =
           await _service.checkConnectionStatus(phoneId: targetPhoneId);
 
-      // إذا تم الاتصال، احفظ معرف الهاتف
-      if (_isConnected && (phoneId != null && phoneId != _activePhoneId)) {
-        await _savePhoneId(phoneId);
+      // تأكد من حفظ معرف الهاتف إذا كان الاتصال ناجحًا
+      if (_isConnected) {
+        _activePhoneId = targetPhoneId;
+        await _savePhoneId(targetPhoneId);
+
+        // طباعة قيمة معرف الهاتف للتحقق
+        print('تم الاتصال بنجاح. معرف الهاتف النشط هو: $_activePhoneId');
+      } else {
+        print('فشل الاتصال بواتساب');
       }
 
       return _isConnected;
     } catch (e) {
       _error = e.toString();
       _isConnected = false;
+      print('خطأ في التحقق من اتصال واتساب: $e');
       return false;
     } finally {
       _isLoading = false;
@@ -180,7 +189,7 @@ class WhatsAppProvider with ChangeNotifier {
     final now = DateTime.now();
     final shouldUpdate = forceRefresh ||
         _lastGroupsUpdate == null ||
-        now.difference(_lastGroupsUpdate!).inMinutes > 15; // تحديث كل 15 دقيقة
+        now.difference(_lastGroupsUpdate!).inMinutes > 60; // تحديث كل 15 دقيقة
 
     if (!shouldUpdate && _groups.isNotEmpty) {
       // استخدام البيانات المخزنة مؤقتًا إذا كانت حديثة
@@ -193,15 +202,26 @@ class WhatsAppProvider with ChangeNotifier {
 
     try {
       if (_activePhoneId == null) {
+        print('لا يوجد معرف هاتف نشط. محاولة تحميل المعرف المحفوظ...');
+        await _loadSavedPhoneId(); // محاولة تحميل المعرف المحفوظ
+      }
+
+      if (_activePhoneId == null) {
         _error = 'لا يوجد معرف هاتف نشط. يرجى إعداد واتساب أولاً.';
+        print(_error);
         _groups = [];
+        notifyListeners();
         return;
       }
 
+      print('جلب مجموعات واتساب باستخدام معرف الهاتف: $_activePhoneId');
       _groups = await _service.getGroups(phoneId: _activePhoneId!);
+      print('تم جلب ${_groups.length} مجموعة');
+
       _lastGroupsUpdate = now;
     } catch (e) {
       _error = e.toString();
+      print('خطأ في جلب مجموعات واتساب: $e');
       // الاحتفاظ بالمجموعات القديمة في حالة فشل التحديث
       if (_groups.isEmpty) {
         _groups = [];
@@ -232,13 +252,23 @@ class WhatsAppProvider with ChangeNotifier {
   // إرسال منشور إلى مجموعة واحدة مع آلية إعادة المحاولة
   Future<bool> sendPostToGroup({
     required String groupId,
-    required String message,
+    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
     File? mediaFile,
     int maxRetries = 2,
   }) async {
     try {
       if (_activePhoneId == null) {
         _error = 'لا يوجد معرف هاتف نشط. يرجى إعداد واتساب أولاً.';
+        notifyListeners();
+        return false;
+      }
+
+      // التحقق من وجود محتوى للإرسال
+      bool hasMedia = mediaFile != null && await mediaFile.exists();
+      bool hasText = message.trim().isNotEmpty;
+
+      if (!hasMedia && !hasText) {
+        _error = 'يجب توفير نص أو وسائط للإرسال.';
         notifyListeners();
         return false;
       }
@@ -257,7 +287,7 @@ class WhatsAppProvider with ChangeNotifier {
           }
 
           // إذا كانت هناك وسائط ولم ننجح في إرسالها في المحاولة الأولى، حاول إرسال النص فقط
-          if (mediaFile != null && attempt > 0) {
+          if (mediaFile != null && attempt > 0 && message.trim().isNotEmpty) {
             print('فشل إرسال الوسائط في المحاولة السابقة، إرسال النص فقط');
             success = await _service.sendTextMessage(
               phoneId: _activePhoneId!,
@@ -383,13 +413,22 @@ class WhatsAppProvider with ChangeNotifier {
 
     try {
       if (_activePhoneId == null) {
+        print('لا يوجد معرف هاتف نشط. محاولة تحميل المعرف المحفوظ...');
+        await _loadSavedPhoneId(); // محاولة تحميل المعرف المحفوظ
+      }
+
+      if (_activePhoneId == null) {
         _error = 'لا يوجد معرف هاتف نشط. يرجى إعداد واتساب أولاً.';
+        print(_error);
         return [];
       }
 
       // تحديث قائمة المجموعات
+      print('مزامنة مجموعات واتساب باستخدام معرف الهاتف: $_activePhoneId');
       final oldGroupCount = _groups.length;
       _groups = await _service.getGroups(phoneId: _activePhoneId!);
+      print('تم جلب ${_groups.length} مجموعة');
+
       _lastGroupsUpdate = DateTime.now();
 
       final newGroupCount = _groups.length;
@@ -403,6 +442,7 @@ class WhatsAppProvider with ChangeNotifier {
     } catch (e) {
       _error = e.toString();
       _syncMessage = 'فشل في مزامنة المجموعات';
+      print('خطأ في مزامنة المجموعات: $e');
       return [];
     } finally {
       _isSyncing = false;

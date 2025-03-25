@@ -30,19 +30,57 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
     if (!mounted) return;
 
     if (isConnected) {
-      // إذا كان متصلًا، انتقل إلى الشاشة الرئيسية
+      // إظهار مؤشر مع رسالة مختلفة
+      setState(() {
+        _isCheckingStatus = true;
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('متصل بواتساب بالفعل!'),
+          content: Text('متصل بواتساب بالفعل! جاري جلب المجموعات...'),
           backgroundColor: Colors.green,
         ),
       );
 
       // جلب المجموعات
-      await provider.loadGroups();
+      try {
+        await provider.loadGroups(forceRefresh: true);
 
-      if (mounted) {
-        Navigator.pop(context);
+        if (!mounted) return;
+
+        // التحقق من وجود مجموعات
+        if (provider.groups.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('تم العثور على ${provider.groups.length} مجموعة'),
+              backgroundColor: Colors.green,
+            ),
+          );
+
+          // الرجوع للشاشة السابقة فقط إذا كان هناك مجموعات
+          if (mounted) {
+            Navigator.pop(context);
+          }
+        } else {
+          // إذا لم يكن هناك مجموعات، نبقى في شاشة الإعداد ونعرض رسالة
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content:
+                  Text('تم الاتصال ولكن لم يتم العثور على مجموعات في واتساب'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('حدث خطأ أثناء جلب المجموعات: $e'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
       }
     } else {
       // جلب رمز QR
@@ -71,16 +109,57 @@ class _WhatsAppSetupScreenState extends State<WhatsAppSetupScreen> {
         ),
       );
 
-      // جلب المجموعات
-      await provider.loadGroups();
+      // إظهار مؤشر تحميل إضافي للمجموعات
+      setState(() {
+        _isCheckingStatus = true;
+      });
 
-      if (mounted) {
-        Navigator.pop(context);
+      // جلب المجموعات مع تفعيل التحديث الإجباري
+      try {
+        await provider.loadGroups(forceRefresh: true);
+
+        if (!mounted) return;
+
+        // التحقق من وجود مجموعات
+        if (provider.groups.isNotEmpty) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('تم العثور على ${provider.groups.length} مجموعة'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          // إظهار تنبيه إذا لم يتم العثور على مجموعات
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  'تم الاتصال بنجاح ولكن لم يتم العثور على مجموعات، تأكد من وجود مجموعات في واتساب'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 5),
+            ),
+          );
+        }
+
+        if (mounted) {
+          // الرجوع للشاشة السابقة فقط إذا كان هناك مجموعات
+          if (provider.groups.isNotEmpty) {
+            Navigator.pop(context);
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('تم الاتصال ولكن حدث خطأ أثناء جلب المجموعات: $e'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
       }
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('لم يتم الاتصال، تأكد من مسح رمز QR'),
+          content: Text('لم يتم الاتصال، تأكد من مسح رمز QR بشكل صحيح'),
           backgroundColor: Colors.orange,
         ),
       );
