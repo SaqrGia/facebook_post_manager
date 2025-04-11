@@ -307,6 +307,135 @@ class WhatsAppService {
     }
   }
 
+  Future<bool> sendMultipleMedia({
+    required String phoneId,
+    required String groupId,
+    required List<File> files,
+    String? caption,
+  }) async {
+    try {
+      // التحقق من وجود الملفات
+      if (files.isEmpty) {
+        print('قائمة ملفات الوسائط فارغة');
+        throw WhatsAppApiException('لا توجد ملفات وسائط للإرسال');
+      }
+
+      print('إرسال ${files.length} وسائط إلى المجموعة: $groupId');
+
+      // إضافة تتبع إضافي لتشخيص المشكلة
+      for (int i = 0; i < files.length; i++) {
+        print(
+            'تحقق من الملف ${i + 1}: ${files[i].path}, الحجم: ${await files[i].length()} بايت');
+      }
+
+      // ملاحظة: تمت إزالة إضافة النص التوضيحي التلقائي
+      String mediaCaption = caption ?? '';
+
+      // إرسال رسالة نصية مسبقة إذا كان هناك عدد كبير من الصور
+      if (files.length > 3 && caption != null && caption.isNotEmpty) {
+        print('إرسال رسالة نصية مسبقة نظراً لوجود ${files.length} صور');
+        await sendTextMessage(
+          phoneId: phoneId,
+          groupId: groupId,
+          message:
+              "$caption\n\n(${files.length} صور)", // إضافة عدد الصور للنص فقط
+        );
+
+        // لتجنب الازدواجية، نحذف النص التوضيحي من الصور
+        mediaCaption = '';
+      }
+
+      // إرسال الصور واحدة تلو الأخرى مع فاصل زمني لتجنب الحظر
+      bool allSuccess = true;
+      int successCount = 0;
+
+      // تخزين الصور التي تم إرسالها بنجاح لتسجيل التقدم
+      List<int> successfulIndices = [];
+
+      for (int i = 0; i < files.length; i++) {
+        final file = files[i];
+
+        try {
+          // تحديد نص توضيحي خاص لكل صورة
+          String currentCaption = '';
+
+          // إضافة النص التوضيحي فقط للصورة الأولى إذا كان موجودًا
+          if (i == 0 && mediaCaption.isNotEmpty) {
+            currentCaption = mediaCaption;
+          }
+
+          print(
+              'إرسال الصورة ${i + 1} من ${files.length} إلى المجموعة $groupId');
+
+          // تأكد من وجود الملف قبل الإرسال
+          if (!await file.exists()) {
+            print('خطأ: الملف ${file.path} غير موجود');
+            continue;
+          }
+
+          // إضافة تأخير قبل كل إرسال لتجنب الترشيح من قبل WhatsApp API
+          if (i > 0) {
+            // تأخير أطول بين الإرسالات المتتالية
+            await Future.delayed(Duration(milliseconds: 1500));
+          }
+
+          final success = await sendMedia(
+            phoneId: phoneId,
+            groupId: groupId,
+            file: file,
+            caption: currentCaption,
+          );
+
+          if (success) {
+            successCount++;
+            successfulIndices.add(i);
+            print('نجاح إرسال الصورة ${i + 1} من ${files.length}');
+          } else {
+            print('فشل إرسال الصورة ${i + 1} من ${files.length}');
+            allSuccess = false;
+          }
+        } catch (e) {
+          print('خطأ في إرسال الصورة ${i + 1}: $e');
+          allSuccess = false;
+        }
+      }
+
+      // إذا نجحت في إرسال بعض الصور على الأقل
+      if (successCount > 0) {
+        if (successCount < files.length) {
+          print(
+              'تم إرسال $successCount من أصل ${files.length} صور، الصور المرسلة: $successfulIndices');
+        } else {
+          print('تم إرسال جميع الصور بنجاح (${files.length})');
+        }
+        return true;
+      }
+
+      return false;
+    } catch (e) {
+      print('خطأ عام في إرسال الصور المتعددة: $e');
+
+      // محاولة إرسال النص كرسالة منفصلة إذا فشل إرسال الوسائط
+      if (caption != null && caption.isNotEmpty) {
+        try {
+          print('محاولة إرسال النص بدلاً من الوسائط بعد الفشل');
+          return await sendTextMessage(
+            phoneId: phoneId,
+            groupId: groupId,
+            message: '$caption (تعذر إرسال الصور)',
+          );
+        } catch (_) {
+          // إذا فشل أيضًا
+          if (e is WhatsAppApiException) rethrow;
+          throw WhatsAppApiException('خطأ في إرسال الوسائط المتعددة: $e');
+        }
+      } else {
+        if (e is WhatsAppApiException) rethrow;
+        throw WhatsAppApiException('خطأ في إرسال الوسائط المتعددة: $e');
+      }
+    }
+  }
+
   // إرسال وسائط (صور أو فيديو) إلى مجموعة
   Future<bool> sendMedia({
     required String phoneId,
@@ -399,34 +528,72 @@ class WhatsAppService {
   Future<bool> sendPost({
     required String phoneId,
     required String groupId,
-    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
+    String message = '',
     File? mediaFile,
+    List<File>? mediaFiles,
   }) async {
     try {
       // أضف تأخير قصير قبل إرسال الطلب لتجنب التقييد على API
       await Future.delayed(const Duration(milliseconds: 300));
 
-      // تحقق من وجود وسائط صالحة
-      if (mediaFile != null && await mediaFile.exists()) {
+      // طباعة معلومات تشخيصية إضافية
+      print('sendPost - groupId: $groupId, message length: ${message.length}');
+      print(
+          'sendPost - mediaFile: ${mediaFile != null}, mediaFiles: ${mediaFiles?.length ?? 0}');
+
+      // التحقق من وجود ملفات وسائط متعددة (أكثر من ملف واحد)
+      bool hasMultipleFiles = mediaFiles != null && mediaFiles.length > 1;
+
+      // تحقق من وجود ملف وسائط منفرد صالح
+      bool hasSingleFile = mediaFile != null && await mediaFile.exists();
+
+      // إذا كان لدينا ملفات متعددة (أهم من ملف منفرد)
+      if (hasMultipleFiles) {
+        // التحقق من أن الملفات موجودة
+        List<File> validFiles = [];
+        for (var file in mediaFiles!) {
+          if (await file.exists()) {
+            validFiles.add(file);
+            print('ملف صالح: ${file.path}, الحجم: ${await file.length()} بايت');
+          } else {
+            print('ملف غير صالح: ${file.path}');
+          }
+        }
+
+        if (validFiles.isEmpty) {
+          throw WhatsAppApiException('لا توجد ملفات وسائط صالحة للإرسال');
+        }
+
+        // إرسال الوسائط المتعددة مع الرسالة النصية
+        print('إرسال ${validFiles.length} ملفات وسائط إلى المجموعة: $groupId');
+        return await sendMultipleMedia(
+          phoneId: phoneId,
+          groupId: groupId,
+          files: validFiles,
+          caption: message.isNotEmpty ? message : null,
+        );
+      }
+      // إذا كان لدينا ملف منفرد
+      else if (hasSingleFile) {
         // تحقق من حجم الملف وتحذير إذا كان كبيرًا جدًا
-        final fileSize = await mediaFile.length();
+        final fileSize = await mediaFile!.length();
         if (fileSize > 10 * 1024 * 1024) {
           // أكثر من 10 ميجابايت
           print(
               'تحذير: حجم الملف كبير (${(fileSize / (1024 * 1024)).toStringAsFixed(2)} ميجابايت) وقد يفشل الإرسال');
         }
 
-        print('إرسال وسائط إلى المجموعة: $groupId');
+        print('إرسال وسائط فردية إلى المجموعة: $groupId');
         // إرسال الوسائط مع أو بدون تعليق (حسب ما إذا كان النص فارغًا أم لا)
         return await sendMedia(
           phoneId: phoneId,
           groupId: groupId,
-          file: mediaFile,
-          caption: message.isNotEmpty
-              ? message
-              : null, // هذا يعني أنه يمكن إرسال الوسائط بدون نص
+          file: mediaFile!,
+          caption: message.isNotEmpty ? message : null,
         );
-      } else if (message.isNotEmpty) {
+      }
+      // إذا كان لدينا رسالة نصية فقط
+      else if (message.isNotEmpty) {
         // إرسال رسالة نصية فقط
         print('إرسال رسالة نصية إلى المجموعة: $groupId');
         return await sendTextMessage(
@@ -434,8 +601,9 @@ class WhatsAppService {
           groupId: groupId,
           message: message,
         );
-      } else {
-        // لا توجد وسائط ولا رسالة نصية
+      }
+      // لا توجد وسائط ولا رسالة نصية
+      else {
         print('لا يمكن إرسال منشور فارغ (بدون نص ووسائط)');
         throw WhatsAppApiException('لا يمكن إرسال منشور فارغ (بدون نص ووسائط)');
       }

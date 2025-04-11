@@ -7,6 +7,8 @@ import 'package:path/path.dart' as path;
 import '../config/app_config.dart';
 import '../models/page.dart';
 import '../models/instagram_account.dart';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 
 class FacebookApiException implements Exception {
   final String message;
@@ -147,6 +149,82 @@ class FacebookService {
     } catch (e) {
       print('خطأ في جلب حسابات Instagram: $e');
       throw FacebookApiException('فشل في جلب حسابات Instagram: $e');
+    }
+  }
+
+  Future<File> prepareImageForInstagram(File imageFile,
+      {bool isCarousel = false}) async {
+    try {
+      // قراءة الصورة
+      final bytes = await imageFile.readAsBytes();
+      final image = img.decodeImage(bytes);
+
+      if (image == null) {
+        throw FacebookApiException('فشل في قراءة الصورة');
+      }
+
+      // الحصول على أبعاد الصورة
+      final width = image.width;
+      final height = image.height;
+      final aspectRatio = width / height;
+
+      // نسب العرض إلى الارتفاع المدعومة من Instagram
+      double minRatio =
+          isCarousel ? 1.0 : 0.8; // 1:1 للألبوم، 4:5 للصور الفردية
+      double maxRatio = 1.91; // 1.91:1 لكليهما
+
+      img.Image? resizedImage;
+
+      // إذا كانت النسبة ضمن الحدود المدعومة
+      if (aspectRatio >= minRatio && aspectRatio <= maxRatio) {
+        // لا نحتاج لتغيير أبعاد الصورة
+        return imageFile;
+      }
+
+      // إذا كانت النسبة أقل من الحد الأدنى (صورة طويلة جداً)
+      if (aspectRatio < minRatio) {
+        // حساب العرض الجديد بناءً على النسبة الدنيا
+        final newWidth = (height * minRatio).round();
+
+        // إنشاء صورة جديدة بخلفية بيضاء
+        resizedImage = img.Image(width: newWidth, height: height);
+        img.fill(resizedImage, color: img.ColorRgb8(255, 255, 255));
+
+        // وضع الصورة الأصلية في المنتصف
+        final offsetX = (newWidth - width) ~/ 2;
+        img.compositeImage(resizedImage, image, dstX: offsetX, dstY: 0);
+      }
+      // إذا كانت النسبة أكبر من الحد الأقصى (صورة عريضة جداً)
+      else if (aspectRatio > maxRatio) {
+        // حساب الارتفاع الجديد بناءً على النسبة القصوى
+        final newHeight = (width / maxRatio).round();
+
+        // إنشاء صورة جديدة بخلفية بيضاء
+        resizedImage = img.Image(width: width, height: newHeight);
+        img.fill(resizedImage, color: img.ColorRgb8(255, 255, 255));
+
+        // وضع الصورة الأصلية في المنتصف
+        final offsetY = (newHeight - height) ~/ 2;
+        img.compositeImage(resizedImage, image, dstX: 0, dstY: offsetY);
+      }
+
+      if (resizedImage == null) {
+        return imageFile;
+      }
+
+      // حفظ الصورة المعدلة في ملف مؤقت
+      final tempDir = await getTemporaryDirectory();
+      final fileName = path.basename(imageFile.path);
+      final targetPath = path.join(tempDir.path, 'instagram_$fileName');
+
+      final File outputFile = File(targetPath);
+      await outputFile.writeAsBytes(img.encodeJpg(resizedImage, quality: 95));
+
+      return outputFile;
+    } catch (e) {
+      print('خطأ في تحضير الصورة لإنستغرام: $e');
+      // في حالة الخطأ نعيد الصورة الأصلية ونسجل الخطأ
+      return imageFile;
     }
   }
 
@@ -392,6 +470,11 @@ class FacebookService {
     try {
       print('بدء نشر صورة على Instagram...');
 
+      // تأكد من أن الملف موجود
+      if (!await imageFile.exists()) {
+        throw FacebookApiException('ملف الصورة غير موجود');
+      }
+
       // 1. أولاً: رفع الصورة إلى Facebook للحصول على URL
       var uploadRequest = http.MultipartRequest(
         'POST',
@@ -450,50 +533,233 @@ class FacebookService {
         body: {
           'access_token': pageAccessToken,
           'image_url': imageUrl,
-          if (caption.isNotEmpty) 'caption': caption,
+          'caption': caption,
         },
       );
 
       print('استجابة container: ${containerResponse.statusCode}');
       print('محتوى استجابة container: ${containerResponse.body}');
 
-      if (containerResponse.statusCode == 200) {
-        final containerData = json.decode(containerResponse.body);
-        final String containererId = containerData['id'];
-        print('تم إنشاء container بنجاح, ID: $containererId');
-
-        // 3. نشر الوسائط باستخدام container ID
-        final publishResponse = await _client.post(
-          Uri.parse('${AppConfig.baseUrl}/$instagramAccountId/media_publish'),
-          body: {
-            'access_token': pageAccessToken,
-            'creation_id': containererId,
-          },
-        );
-
-        print('استجابة النشر: ${publishResponse.statusCode}');
-        print('محتوى استجابة النشر: ${publishResponse.body}');
-
-        if (publishResponse.statusCode == 200) {
-          final publishData = json.decode(publishResponse.body);
-          print('تم النشر بنجاح على Instagram');
-          return publishData['id'];
-        } else {
-          throw FacebookApiException(
-            'فشل في نشر الوسائط على Instagram: ${publishResponse.body}',
-            statusCode: publishResponse.statusCode,
-          );
-        }
-      } else {
+      if (containerResponse.statusCode != 200) {
         throw FacebookApiException(
           'فشل في تحضير الوسائط للنشر على Instagram: ${containerResponse.body}',
           statusCode: containerResponse.statusCode,
+        );
+      }
+
+      final containerData = json.decode(containerResponse.body);
+      if (!containerData.containsKey('id')) {
+        throw FacebookApiException(
+          'لم يتم العثور على معرف container في الاستجابة: ${containerResponse.body}',
+        );
+      }
+
+      final String containerId = containerData['id'];
+      print('تم إنشاء container بنجاح, ID: $containerId');
+
+      // إضافة تأخير قبل النشر - قد يساعد في بعض الحالات
+      await Future.delayed(Duration(seconds: 2));
+
+      // 3. نشر الوسائط باستخدام container ID
+      final publishResponse = await _client.post(
+        Uri.parse('${AppConfig.baseUrl}/$instagramAccountId/media_publish'),
+        body: {
+          'access_token': pageAccessToken,
+          'creation_id': containerId,
+        },
+      );
+
+      print('استجابة النشر: ${publishResponse.statusCode}');
+      print('محتوى استجابة النشر: ${publishResponse.body}');
+
+      if (publishResponse.statusCode == 200) {
+        final publishData = json.decode(publishResponse.body);
+        print('تم النشر بنجاح على Instagram');
+
+        // إضافة تنبيه للتأكد من اكتمال العملية حتى لو أظهر التطبيق نجاح مزيفاً
+        print('تحقق من نجاح النشر: $publishData');
+
+        return publishData['id'];
+      } else {
+        throw FacebookApiException(
+          'فشل في نشر الوسائط على Instagram: ${publishResponse.body}',
+          statusCode: publishResponse.statusCode,
         );
       }
     } catch (e) {
       print('خطأ في النشر على Instagram: $e');
       if (e is FacebookApiException) rethrow;
       throw FacebookApiException('خطأ في النشر على Instagram: $e');
+    }
+  }
+
+  Future<String> publishInstagramCarousel({
+    required String instagramAccountId,
+    required String pageAccessToken,
+    required List<File> imageFiles,
+    String caption = '',
+  }) async {
+    try {
+      print('بدء نشر ألبوم صور على Instagram...');
+
+      if (imageFiles.isEmpty) {
+        throw FacebookApiException('لا توجد صور لنشرها');
+      }
+
+      // 1. أولاً: نقوم برفع كل صورة والحصول على container IDs
+      List<String> containerIds = [];
+
+      for (int i = 0; i < imageFiles.length; i++) {
+        final file = imageFiles[i];
+        print('جاري رفع الصورة ${i + 1} من ${imageFiles.length}...');
+
+        // رفع الصورة إلى Facebook للحصول على URL
+        var uploadRequest = http.MultipartRequest(
+          'POST',
+          Uri.parse('${AppConfig.baseUrl}/me/photos'),
+        );
+
+        uploadRequest.fields['access_token'] = pageAccessToken;
+        uploadRequest.fields['published'] = 'false'; // لا ننشر على Facebook
+
+        final stream = http.ByteStream(file.openRead());
+        final length = await file.length();
+
+        final multipartFile = http.MultipartFile(
+          'source',
+          stream,
+          length,
+          filename: path.basename(file.path),
+        );
+
+        uploadRequest.files.add(multipartFile);
+
+        final uploadResponse =
+            await http.Response.fromStream(await uploadRequest.send());
+
+        if (uploadResponse.statusCode != 200) {
+          throw FacebookApiException(
+            'فشل في رفع الصورة لإنستقرام: ${uploadResponse.body}',
+            statusCode: uploadResponse.statusCode,
+          );
+        }
+
+        // استخراج رقم تعريف الصورة
+        final uploadData = json.decode(uploadResponse.body);
+        final photoId = uploadData['id'];
+
+        // استخراج URL الصورة
+        final photoResponse = await _client.get(
+          Uri.parse('${AppConfig.baseUrl}/$photoId').replace(
+            queryParameters: {
+              'access_token': pageAccessToken,
+              'fields': 'images',
+            },
+          ),
+        );
+
+        final photoData = json.decode(photoResponse.body);
+        final imageUrl = photoData['images'][0]['source'];
+
+        print('تم الحصول على URL الصورة ${i + 1}: $imageUrl');
+
+        // إنشاء container Instagram للصورة
+        final containerResponse = await _client.post(
+          Uri.parse('${AppConfig.baseUrl}/$instagramAccountId/media'),
+          body: {
+            'access_token': pageAccessToken,
+            'image_url': imageUrl,
+            // نضيف التعليق فقط للصورة الأولى في الألبوم (وليس لكل صورة)
+            if (i == 0 && caption.isNotEmpty) 'caption': caption,
+          },
+        );
+
+        if (containerResponse.statusCode != 200) {
+          throw FacebookApiException(
+            'فشل في تحضير الوسائط للنشر على Instagram: ${containerResponse.body}',
+            statusCode: containerResponse.statusCode,
+          );
+        }
+
+        final containerData = json.decode(containerResponse.body);
+        final String containerId = containerData['id'];
+        print('تم إنشاء container للصورة ${i + 1}, ID: $containerId');
+
+        containerIds.add(containerId);
+      }
+
+      // 2. إنشاء carousel media container باستخدام children_ids
+      // المشكلة كانت في طريقة تنسيق معرفات children - التصحيح أدناه
+      print('إنشاء carousel container باستخدام ${containerIds.length} صورة...');
+
+      // تكوين قائمة JSON للـ children بصيغة صحيحة
+      final Map<String, String> carouselParams = {
+        'access_token': pageAccessToken,
+        'media_type': 'CAROUSEL',
+      };
+
+      // إضافة معرفات children بصيغة مختلفة (مفتاح منفرد لكل معرف)
+      for (int i = 0; i < containerIds.length; i++) {
+        carouselParams['children[$i]'] = containerIds[i];
+      }
+
+      // اطبع المعلمات للتدقيق
+      print('معلمات carousel: $carouselParams');
+
+      final carouselResponse = await _client.post(
+        Uri.parse('${AppConfig.baseUrl}/$instagramAccountId/media'),
+        body: carouselParams,
+      );
+
+      print('استجابة carousel container: ${carouselResponse.statusCode}');
+      print('محتوى استجابة carousel: ${carouselResponse.body}');
+
+      if (carouselResponse.statusCode != 200) {
+        throw FacebookApiException(
+          'فشل في إنشاء carousel container للنشر على Instagram: ${carouselResponse.body}',
+          statusCode: carouselResponse.statusCode,
+        );
+      }
+
+      final carouselData = json.decode(carouselResponse.body);
+      if (!carouselData.containsKey('id')) {
+        throw FacebookApiException(
+          'لم يتم العثور على معرف carousel container في الاستجابة: ${carouselResponse.body}',
+        );
+      }
+
+      final String carouselId = carouselData['id'];
+      print('تم إنشاء carousel container بنجاح, ID: $carouselId');
+
+      // 3. نشر الألبوم باستخدام carousel container ID
+      // إضافة تأخير قبل محاولة النشر لإعطاء Instagram وقتًا لمعالجة الصور
+      await Future.delayed(Duration(seconds: 3));
+
+      final publishResponse = await _client.post(
+        Uri.parse('${AppConfig.baseUrl}/$instagramAccountId/media_publish'),
+        body: {
+          'access_token': pageAccessToken,
+          'creation_id': carouselId,
+        },
+      );
+
+      print('استجابة نشر الألبوم: ${publishResponse.statusCode}');
+      print('محتوى استجابة النشر: ${publishResponse.body}');
+
+      if (publishResponse.statusCode == 200) {
+        final publishData = json.decode(publishResponse.body);
+        print('تم النشر بنجاح على Instagram كألبوم صور');
+        return publishData['id'];
+      } else {
+        throw FacebookApiException(
+          'فشل في نشر الألبوم على Instagram: ${publishResponse.body}',
+          statusCode: publishResponse.statusCode,
+        );
+      }
+    } catch (e) {
+      print('خطأ في نشر ألبوم على Instagram: $e');
+      if (e is FacebookApiException) rethrow;
+      throw FacebookApiException('خطأ في نشر ألبوم على Instagram: $e');
     }
   }
 
@@ -745,46 +1011,95 @@ class FacebookService {
   Future<String> publishToInstagramWithFallback({
     required String instagramAccountId,
     required String pageAccessToken,
-    required File mediaFile,
-    String? videoUrl, // نحتفظ بهذه المعلمة للتوافق فقط
+    File? mediaFile,
+    List<File>? mediaFiles,
+    String? videoUrl,
     String caption = '',
     Function(String status, int progressPercent)? onProgress,
   }) async {
     try {
-      // التحقق هل الملف فيديو
-      bool isVideo =
-          lookupMimeType(mediaFile.path)?.startsWith('video/') ?? false;
+      // تحديث حالة التقدم
+      if (onProgress != null) {
+        onProgress('بدء عملية النشر على Instagram...', 5);
+      }
 
-      if (isVideo) {
-        // نشر فيديو كـ REELS
-        print('نشر فيديو على Instagram كـ REELS...');
-        return await publishReelsToInstagram(
-          instagramAccountId: instagramAccountId,
-          pageAccessToken: pageAccessToken,
-          videoFile: mediaFile,
-          caption: caption,
-          onProgress: onProgress,
-        );
-      } else {
-        // نشر صورة
-        print('نشر صورة على Instagram...');
+      // التحقق من وجود ملفات وسائط متعددة
+      bool hasMultipleFiles = mediaFiles != null && mediaFiles.length > 1;
 
+      // إذا كان لدينا ملف واحد وليس لدينا قائمة ملفات متعددة
+      if (mediaFile != null && !hasMultipleFiles) {
+        // التحقق هل الملف فيديو
+        bool isVideo =
+            lookupMimeType(mediaFile.path)?.startsWith('video/') ?? false;
+
+        // تحديث حالة التقدم
         if (onProgress != null) {
-          onProgress('بدء نشر الصورة على Instagram...', 10);
+          onProgress(
+              isVideo
+                  ? 'جاري تحضير الفيديو للنشر...'
+                  : 'جاري تحضير الصورة للنشر...',
+              10);
         }
 
-        final result = await publishToInstagram(
+        if (isVideo) {
+          // نشر فيديو كـ REELS
+          print('نشر فيديو على Instagram كـ REELS...');
+          String result = await publishReelsToInstagram(
+            instagramAccountId: instagramAccountId,
+            pageAccessToken: pageAccessToken,
+            videoFile: mediaFile,
+            caption: caption,
+            onProgress: onProgress,
+          );
+
+          if (onProgress != null) {
+            onProgress('تم نشر الفيديو بنجاح!', 100);
+          }
+
+          return result;
+        } else {
+          // نشر صورة فردية
+          print('نشر صورة فردية على Instagram...');
+
+          if (onProgress != null) {
+            onProgress('جاري نشر الصورة على Instagram...', 20);
+          }
+
+          final result = await publishToInstagram(
+            instagramAccountId: instagramAccountId,
+            pageAccessToken: pageAccessToken,
+            imageFile: mediaFile,
+            caption: caption,
+          );
+
+          if (onProgress != null) {
+            onProgress('تم نشر الصورة بنجاح!', 100);
+          }
+
+          return result;
+        }
+      }
+      // إذا كان لدينا ملفات متعددة (أكثر من صورة واحدة)
+      else if (hasMultipleFiles) {
+        // نشر ألبوم (carousel)
+        if (onProgress != null) {
+          onProgress('جاري تحضير ألبوم الصور للنشر...', 10);
+        }
+
+        final result = await publishInstagramCarousel(
           instagramAccountId: instagramAccountId,
           pageAccessToken: pageAccessToken,
-          imageFile: mediaFile,
+          imageFiles: mediaFiles,
           caption: caption,
         );
 
         if (onProgress != null) {
-          onProgress('تم نشر الصورة بنجاح!', 100);
+          onProgress('تم نشر ألبوم الصور بنجاح!', 100);
         }
 
         return result;
+      } else {
+        throw FacebookApiException('يجب توفير ملف وسائط للنشر على Instagram');
       }
     } catch (e) {
       print('خطأ في نشر المحتوى على Instagram: $e');

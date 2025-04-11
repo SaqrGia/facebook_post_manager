@@ -1,13 +1,13 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
+import 'dart:io';
 import 'package:provider/provider.dart';
 import '../../providers/pages_provider.dart';
-import '../../providers/whatsapp_provider.dart'; // أضفنا هذا
+import '../../providers/whatsapp_provider.dart';
 import '../../widgets/common/loading_indicator.dart';
 import '../../widgets/posts/post_form.dart';
 import '../../widgets/pages/page_selection_list.dart';
 import '../../widgets/instagram_selection_list.dart';
-import '../../widgets/whatsapp/whatsapp_group_selection_list.dart'; // أضفنا هذا
+import '../../widgets/whatsapp/whatsapp_group_selection_list.dart';
 import 'package:mime/mime.dart';
 
 class CreatePostScreen extends StatefulWidget {
@@ -37,6 +37,26 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       // التحقق من اتصال واتساب وتحميل المجموعات إذا كان متصلاً
       _checkWhatsAppConnection();
     });
+  }
+
+  void _showMessage(BuildContext context, String message,
+      {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red : Colors.green,
+        duration: Duration(seconds: isError ? 5 : 3),
+        action: isError
+            ? SnackBarAction(
+                label: 'حسناً',
+                textColor: Colors.white,
+                onPressed: () {
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                },
+              )
+            : null,
+      ),
+    );
   }
 
   // دالة التحقق من اتصال واتساب
@@ -70,8 +90,6 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     });
   }
 
-  // تعديلات لملف lib/screens/posts/create_post_screen.dart - إضافة هذه الدالة
-
   Future<void> _createPost() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -84,10 +102,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         whatsappProvider.selectedGroupIds.isNotEmpty;
 
     if (!hasSelectedPlatform) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'الرجاء اختيار منصة واحدة على الأقل (فيسبوك، انستغرام، أو واتساب)')),
+      _showMessage(
+        context,
+        'الرجاء اختيار منصة واحدة على الأقل (فيسبوك، انستغرام، أو واتساب)',
+        isError: true,
       );
       return;
     }
@@ -97,10 +115,43 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     bool hasText = _messageController.text.isNotEmpty;
 
     if (!hasMedia && !hasText) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('يجب إدخال نص أو اختيار وسائط على الأقل')),
+      _showMessage(
+        context,
+        'يجب إدخال نص أو اختيار وسائط على الأقل',
+        isError: true,
       );
       return;
+    }
+
+    // تحقق من نسب أبعاد الصور للنشر على Instagram
+    if (hasMedia && pagesProvider.selectedInstagramAccounts.isNotEmpty) {
+      // إضافة تحذير هنا إذا كان أي من الصور له أبعاد غير متوافقة مع Instagram
+      bool hasLandscapeImages = false;
+      bool hasPortraitImages = false;
+
+      for (var media in _selectedMedia!) {
+        try {
+          final tempFile = media;
+          final mimeType = lookupMimeType(tempFile.path) ?? '';
+
+          // تحقق فقط إذا كان ملف صورة
+          if (mimeType.startsWith('image/')) {
+            // هنا يمكننا إضافة منطق لفحص أبعاد الصورة
+            // كإجراء مؤقت، نضيف تنبيهًا عامًا
+            hasLandscapeImages = true; // تفترض وجود صور أفقية
+          }
+        } catch (e) {
+          print('خطأ في تحليل الصورة: $e');
+        }
+      }
+
+      if (hasLandscapeImages) {
+        _showMessage(
+          context,
+          'تنبيه: قد يتم تعديل أبعاد بعض الصور لتناسب متطلبات Instagram',
+          isError: false,
+        );
+      }
     }
 
     setState(() => _isSubmitting = true);
@@ -109,42 +160,61 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       // معالجة منفصلة للفيسبوك/انستغرام وواتساب
       bool fbIgSuccess = true;
       bool waSuccess = true;
+      String errorMessage = '';
 
       // النشر على فيسبوك وانستغرام
       if (pagesProvider.selectedPages.isNotEmpty ||
           pagesProvider.selectedInstagramAccounts.isNotEmpty) {
-        fbIgSuccess = await pagesProvider.createPostOnSelectedPages(
-          message: _messageController.text,
-          link: _linkController.text.isNotEmpty ? _linkController.text : null,
-          mediaFiles: _selectedMedia,
-          context: context,
-        );
+        try {
+          fbIgSuccess = await pagesProvider.createPostOnSelectedPages(
+            message: _messageController.text,
+            link: _linkController.text.isNotEmpty ? _linkController.text : null,
+            mediaFiles: _selectedMedia,
+            context: context,
+          );
+
+          if (!fbIgSuccess && pagesProvider.error != null) {
+            errorMessage += 'فيسبوك/انستغرام: ${pagesProvider.error}\n';
+          }
+        } catch (e) {
+          fbIgSuccess = false;
+          errorMessage += 'فيسبوك/انستغرام: $e\n';
+        }
       }
 
       // النشر على واتساب
       if (whatsappProvider.selectedGroupIds.isNotEmpty) {
-        // إرسال للمجموعات المحددة
-        final results = await _sendToWhatsApp(
+        try {
+          // إرسال للمجموعات المحددة
+          final results = await _sendToWhatsApp(
             whatsappProvider: whatsappProvider,
             message: _messageController.text,
-            mediaFile: _selectedMedia?.isNotEmpty == true
-                ? _selectedMedia!.first
-                : null);
+            mediaFiles: _selectedMedia,
+          );
 
-        // التحقق من نجاح النشر على الأقل لمجموعة واحدة
-        waSuccess = results.values.any((success) => success);
+          // التحقق من نجاح النشر على الأقل لمجموعة واحدة
+          waSuccess = results.values.any((success) => success);
+
+          if (!waSuccess && whatsappProvider.error != null) {
+            errorMessage += 'واتساب: ${whatsappProvider.error}\n';
+          }
+        } catch (e) {
+          waSuccess = false;
+          errorMessage += 'واتساب: $e\n';
+        }
       }
 
       if (!mounted) return;
 
       // تحديد رسالة النجاح بناءً على نتائج النشر
-      String successMessage;
       if (fbIgSuccess && waSuccess) {
-        successMessage = 'تم نشر المنشور بنجاح على جميع المنصات';
+        _showMessage(context, 'تم نشر المنشور بنجاح على جميع المنصات');
       } else if (fbIgSuccess) {
-        successMessage = 'تم النشر بنجاح على فيسبوك/انستغرام فقط';
+        _showMessage(context, 'تم النشر بنجاح على فيسبوك/انستغرام فقط');
       } else if (waSuccess) {
-        successMessage = 'تم النشر بنجاح على واتساب فقط';
+        _showMessage(context, 'تم النشر بنجاح على واتساب فقط');
+      } else if (errorMessage.isNotEmpty) {
+        throw Exception(errorMessage);
       } else {
         throw Exception('فشل النشر على جميع المنصات');
       }
@@ -162,21 +232,9 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
       pagesProvider.clearSelection();
       whatsappProvider.clearSelection();
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(successMessage),
-          backgroundColor: Colors.green,
-        ),
-      );
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('حدث خطأ: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      _showMessage(context, 'حدث خطأ: $e', isError: true);
     } finally {
       if (mounted) {
         setState(() => _isSubmitting = false);
@@ -187,51 +245,87 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 // إضافة دالة مساعدة خاصة لإرسال المحتوى إلى واتساب
   Future<Map<String, bool>> _sendToWhatsApp({
     required WhatsAppProvider whatsappProvider,
-    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
-    File? mediaFile,
+    String message = '',
+    List<File>? mediaFiles,
   }) async {
     Map<String, bool> results = {};
 
     try {
       // التحقق من وجود وسائط
-      bool hasMedia = mediaFile != null;
+      bool hasMediaFiles = mediaFiles != null && mediaFiles.isNotEmpty;
 
       // التحقق من وجود محتوى للإرسال (إما وسائط أو نص)
-      if (!hasMedia && message.trim().isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('يجب توفير نص أو وسائط للإرسال لمجموعات واتساب'),
-          ),
+      if (!hasMediaFiles && message.trim().isEmpty) {
+        _showMessage(
+          context,
+          'يجب توفير نص أو وسائط للإرسال لمجموعات واتساب',
+          isError: true,
         );
         return {};
       }
 
       // التحقق من وجود فيديو
-      bool isVideo = false;
-      if (hasMedia) {
-        final mimeType = lookupMimeType(mediaFile!.path) ?? '';
-        isVideo = mimeType.startsWith('video/');
+      bool containsVideo = false;
+      if (hasMediaFiles) {
+        for (var file in mediaFiles!) {
+          final mimeType = lookupMimeType(file.path) ?? '';
+          if (mimeType.startsWith('video/')) {
+            containsVideo = true;
+            break;
+          }
+        }
 
-        // إذا كان المحتوى فيديو، نعرض إشعاراً
-        if (isVideo) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'جاري إرسال الفيديو إلى مجموعات واتساب، قد يستغرق الأمر وقتاً طويلاً...'),
-              duration: Duration(seconds: 10),
-            ),
+        // إذا كان المحتوى يحتوي على فيديو، نعرض إشعاراً
+        if (containsVideo && mediaFiles.length > 1) {
+          _showMessage(
+            context,
+            'لا يمكن إرسال الفيديو مع صور أخرى، سيتم إرسال الفيديو فقط',
+            isError: false,
+          );
+
+          // تصفية الفيديو فقط
+          List<File> videoFiles = [];
+          for (var file in mediaFiles) {
+            final mimeType = lookupMimeType(file.path) ?? '';
+            if (mimeType.startsWith('video/')) {
+              videoFiles.add(file);
+              break; // نأخذ أول فيديو فقط
+            }
+          }
+
+          if (videoFiles.isNotEmpty) {
+            mediaFiles = videoFiles;
+          }
+        } else if (containsVideo) {
+          _showMessage(
+            context,
+            'جاري إرسال الفيديو إلى مجموعات واتساب، قد يستغرق الأمر وقتاً طويلاً...',
+            isError: false,
           );
         }
       }
 
+      int totalGroups = whatsappProvider.selectedGroupIds.length;
+      int currentGroup = 0;
+
       // إرسال لكل مجموعة على حدة
       for (final groupId in whatsappProvider.selectedGroupIds) {
+        currentGroup++;
         try {
-          // استخدام الدالة المباشرة لإرسال الرسالة/الملف
+          // أضف تحديثًا للمستخدم في المجموعات المتعددة
+          if (totalGroups > 1) {
+            _showMessage(
+              context,
+              'جاري الإرسال إلى المجموعة $currentGroup من $totalGroups...',
+              isError: false,
+            );
+          }
+
+          // استخدام الدالة المحدثة لإرسال الرسالة/الملفات
           bool success = await whatsappProvider.sendPostToGroup(
             groupId: groupId,
             message: message,
-            mediaFile: mediaFile,
+            mediaFiles: hasMediaFiles ? mediaFiles : null,
           );
 
           results[groupId] = success;

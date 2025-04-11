@@ -101,6 +101,36 @@ class PagesProvider with ChangeNotifier {
     }
   }
 
+  void updateUploadStatus(String status, int progress, bool hasError) {
+    _isUploading = true;
+    _uploadStatus = status;
+    _uploadProgress = progress;
+
+    // في حالة النجاح مع نسبة 100%، نتحقق من عدم وجود خطأ فعلي
+    if (progress == 100 && !hasError) {
+      // اترك حالة الرفع ظاهرة لفترة كافية لعرض النجاح
+      Future.delayed(Duration(seconds: 3), () {
+        if (_uploadProgress == 100) {
+          _isUploading = false;
+          notifyListeners();
+        }
+      });
+    }
+
+    // إذا حدث خطأ، نحدث حالة الخطأ ونخفي مؤشر التقدم
+    if (hasError) {
+      _error = status;
+
+      // تأخير قصير قبل إخفاء مؤشر التقدم
+      Future.delayed(Duration(seconds: 2), () {
+        _isUploading = false;
+        notifyListeners();
+      });
+    }
+
+    notifyListeners();
+  }
+
   // إنشاء منشور - مع دعم نشر الفيديو كـ REELS على Instagram
   Future<bool> createPostOnSelectedPages({
     String message = '',
@@ -126,12 +156,13 @@ class PagesProvider with ChangeNotifier {
     _isUploading = false;
     _uploadProgress = 0;
     _uploadStatus = '';
+    _error = null; // تصفير رسالة الخطأ في بداية العملية
 
     notifyListeners();
 
     try {
-      String? videoUrl; // سنخزن هنا رابط الفيديو
       String? fbPostId; // لتخزين معرف منشور الفيسبوك
+      bool anySuccess = false; // للتأكد من نجاح النشر على الأقل منصة واحدة
 
       // التحقق هل الوسائط فيديو
       bool isVideo = false;
@@ -140,30 +171,54 @@ class PagesProvider with ChangeNotifier {
             false;
       }
 
-      // النشر على صفحات Facebook
-      for (final page in selectedPages) {
-        // نشر المحتوى على الصفحة
-        fbPostId = await _facebookService.createPost(
-          pageId: page.id,
-          pageAccessToken: page.accessToken,
-          message: message,
-          link: link,
-          mediaFiles: mediaFiles,
-        );
+      // التحقق هل لدينا صور متعددة
+      bool hasMultipleImages =
+          mediaFiles != null && mediaFiles.length > 1 && !isVideo;
 
-        print(
-            'تم النشر على صفحة Facebook: ${page.name}, معرف المنشور: $fbPostId');
+      // النشر على صفحات Facebook
+      bool facebookSuccess = false;
+      if (selectedPages.isNotEmpty) {
+        try {
+          _isUploading = true;
+          _uploadStatus = 'جاري النشر على صفحات Facebook...';
+          _uploadProgress = 10;
+          notifyListeners();
+
+          for (final page in selectedPages) {
+            // نشر المحتوى على الصفحة
+            fbPostId = await _facebookService.createPost(
+              pageId: page.id,
+              pageAccessToken: page.accessToken,
+              message: message,
+              link: link,
+              mediaFiles: mediaFiles,
+            );
+
+            print(
+                'تم النشر على صفحة Facebook: ${page.name}, معرف المنشور: $fbPostId');
+          }
+
+          facebookSuccess = true;
+          anySuccess = true;
+
+          _uploadStatus = 'تم النشر على Facebook بنجاح!';
+          _uploadProgress = 30;
+          notifyListeners();
+        } catch (e) {
+          print('خطأ في النشر على Facebook: $e');
+          _error = 'فشل النشر على Facebook: $e';
+          notifyListeners();
+        }
       }
 
       // النشر على حسابات Instagram
-      bool anyInstagramSuccess = false;
+      bool instagramSuccess = false;
       if (mediaFiles != null &&
           mediaFiles.isNotEmpty &&
           selectedInstagramAccounts.isNotEmpty) {
-        // تحديث حالة الرفع للواجهة
         _isUploading = true;
-        _uploadStatus = 'جاري الاستعداد لنشر المحتوى على Instagram...';
-        _uploadProgress = 5;
+        _uploadStatus = 'جاري الاستعداد للنشر على Instagram...';
+        _uploadProgress = 40;
         notifyListeners();
 
         for (final igAccount in selectedInstagramAccounts) {
@@ -180,16 +235,36 @@ class PagesProvider with ChangeNotifier {
                 mediaFile: mediaFiles.first,
                 caption: message,
                 onProgress: (status, progressPercent) {
-                  // تحديث حالة التقدم في واجهة المستخدم
+                  // حساب التقدم مع تعديل مدى النسبة ليكون بين 40% و 90%
+                  int adjustedProgress = 40 + ((progressPercent * 50) ~/ 100);
                   _uploadStatus = status;
-                  _uploadProgress = progressPercent;
+                  _uploadProgress = adjustedProgress;
+                  notifyListeners();
+                },
+              );
+            } else if (hasMultipleImages) {
+              // للصور المتعددة - استخدام طريقة الألبوم
+              _uploadStatus = 'جاري نشر ألبوم صور على Instagram...';
+              _uploadProgress = 50;
+              notifyListeners();
+
+              igPostId = await _facebookService.publishToInstagramWithFallback(
+                instagramAccountId: igAccount.id,
+                pageAccessToken: igAccount.pageAccessToken,
+                mediaFiles: mediaFiles,
+                caption: message,
+                onProgress: (status, progressPercent) {
+                  // حساب التقدم مع تعديل مدى النسبة ليكون بين 40% و 90%
+                  int adjustedProgress = 40 + ((progressPercent * 50) ~/ 100);
+                  _uploadStatus = status;
+                  _uploadProgress = adjustedProgress;
                   notifyListeners();
                 },
               );
             } else {
-              // للصور - استخدام الطريقة العادية
+              // للصور المفردة - استخدام الطريقة العادية
               _uploadStatus = 'جاري نشر الصورة على Instagram...';
-              _uploadProgress = 20;
+              _uploadProgress = 50;
               notifyListeners();
 
               igPostId = await _facebookService.publishToInstagram(
@@ -198,40 +273,51 @@ class PagesProvider with ChangeNotifier {
                 imageFile: mediaFiles.first,
                 caption: message,
               );
-
-              _uploadStatus = 'تم نشر الصورة بنجاح!';
-              _uploadProgress = 100;
-              notifyListeners();
             }
 
             print('تم النشر على Instagram بنجاح! معرف المنشور: $igPostId');
-            anyInstagramSuccess = true;
+            instagramSuccess = true;
+            anySuccess = true;
+
+            _uploadStatus = 'تم النشر على Instagram بنجاح!';
+            _uploadProgress = 100;
+            notifyListeners();
+
+            // إخفاء مؤشر التقدم بعد فترة
+            Future.delayed(Duration(seconds: 3), () {
+              if (_uploadProgress == 100) {
+                _isUploading = false;
+                notifyListeners();
+              }
+            });
           } catch (e) {
             String errorMsg =
                 'فشل في النشر على Instagram (${igAccount.username}): $e';
             print(errorMsg);
             _error = errorMsg;
-
-            // تحديث الحالة في واجهة المستخدم
-            _uploadStatus = 'حدث خطأ: $errorMsg';
             _uploadProgress = 0;
-
             notifyListeners();
-            // نستمر مع الحسابات الأخرى
+
+            // لا نعيد الخطأ، بل نستمر مع باقي الحسابات
           }
         }
       }
 
-      // إعادة تعيين حالة الرفع
-      _isUploading = false;
-      notifyListeners();
-
-      // إذا كان هناك خطأ ولكن تم النشر على بعض الحسابات بنجاح، نعدل رسالة الخطأ
-      if (_error != null && (selectedPages.isNotEmpty || anyInstagramSuccess)) {
-        _error = 'تم النشر على بعض الحسابات، ولكن حدثت أخطاء أخرى: $_error';
+      // إذا لم ينجح النشر على أي منصة
+      if (!anySuccess) {
+        _error = 'فشل النشر على جميع المنصات المحددة';
+        _isUploading = false;
+        notifyListeners();
+        return false;
       }
 
-      return true;
+      // إذا كان هناك خطأ ولكن تم النشر على بعض الحسابات بنجاح، نعدل رسالة الخطأ
+      if (_error != null && anySuccess) {
+        _error = 'تم النشر على بعض الحسابات، ولكن حدثت أخطاء أخرى: $_error';
+        notifyListeners();
+      }
+
+      return anySuccess;
     } catch (e) {
       _error = e.toString();
 
@@ -239,8 +325,8 @@ class PagesProvider with ChangeNotifier {
       _isUploading = false;
       _uploadStatus = 'حدث خطأ: $e';
       _uploadProgress = 0;
-
       notifyListeners();
+
       return false;
     } finally {
       _isLoading = false;

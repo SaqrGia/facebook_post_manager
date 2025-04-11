@@ -8,9 +8,9 @@ class AppConfig {
   static const String baseUrl = 'https://graph.facebook.com/$graphApiVersion';
 
   // Maytapi WhatsApp Configuration
-  static const String maytapiProductId = '56ec1951-f97d-4541-82eb-ad4ea4c48a54';
-  static const String maytapiApiKey = '2bda5592-f120-4dbf-b82e-07927f944047';
-  static const String maytapiDefaultPhoneId = '76851';
+  static const String maytapiProductId = 'f7da023e-da13-48eb-812e-a745739944cd';
+  static const String maytapiApiKey = '3e863062-6f04-4f1e-b3db-640a7133c732';
+  static const String maytapiDefaultPhoneId = '77976';
   // Storage Keys
   static const String tokenKey = 'fb_access_token';
   static const String userDataKey = 'user_data';

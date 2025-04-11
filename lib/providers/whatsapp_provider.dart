@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/whatsapp_group.dart';
 import '../services/whatsapp_service.dart';
@@ -124,6 +125,48 @@ class WhatsAppProvider with ChangeNotifier {
     }
   }
 
+  // طريقة لحفظ المجموعات في التخزين المحلي
+  Future<void> _saveGroupsToStorage(List<WhatsAppGroup> groups) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final groupsJson =
+          groups.map((group) => jsonEncode(group.toJson())).toList();
+      await prefs.setStringList('whatsapp_groups', groupsJson);
+      print('تم حفظ ${groups.length} مجموعة في التخزين المحلي');
+    } catch (e) {
+      print('خطأ في حفظ المجموعات: $e');
+    }
+  }
+
+// طريقة لاسترجاع المجموعات من التخزين المحلي
+  Future<List<WhatsAppGroup>> _loadGroupsFromStorage() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final groupsJson = prefs.getStringList('whatsapp_groups') ?? [];
+      if (groupsJson.isEmpty) {
+        print('لا توجد مجموعات مخزنة');
+        return [];
+      }
+
+      print('تم العثور على ${groupsJson.length} مجموعة مخزنة');
+      return groupsJson
+          .map((json) {
+            try {
+              final Map<String, dynamic> data = jsonDecode(json);
+              return WhatsAppGroup.fromJson(data);
+            } catch (e) {
+              print('خطأ في قراءة بيانات مجموعة: $e');
+              return null;
+            }
+          })
+          .whereType<WhatsAppGroup>()
+          .toList();
+    } catch (e) {
+      print('خطأ في تحميل المجموعات: $e');
+      return [];
+    }
+  }
+
   // الحصول على رمز QR للمصادقة
   Future<Map<String, String?>> getQRCode({String? phoneId}) async {
     _isLoading = true;
@@ -185,14 +228,9 @@ class WhatsAppProvider with ChangeNotifier {
 
   // تحميل مجموعات واتساب مع كاش للتقليل من طلبات API
   Future<void> loadGroups({bool forceRefresh = false}) async {
-    // تحقق مما إذا كان يجب تحديث المجموعات أم لا
-    final now = DateTime.now();
-    final shouldUpdate = forceRefresh ||
-        _lastGroupsUpdate == null ||
-        now.difference(_lastGroupsUpdate!).inMinutes > 60; // تحديث كل 15 دقيقة
-
-    if (!shouldUpdate && _groups.isNotEmpty) {
-      // استخدام البيانات المخزنة مؤقتًا إذا كانت حديثة
+    // إذا كانت قائمة المجموعات غير فارغة وليس مطلوباً تحديث إجباري، نستخدم القائمة الحالية
+    if (!forceRefresh && _groups.isNotEmpty) {
+      print('استخدام ${_groups.length} مجموعة محملة مسبقًا');
       return;
     }
 
@@ -201,6 +239,19 @@ class WhatsAppProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      // في حالة عدم وجود تحديث إجباري، نحاول تحميل المجموعات من التخزين المحلي أولاً
+      if (!forceRefresh) {
+        final savedGroups = await _loadGroupsFromStorage();
+        if (savedGroups.isNotEmpty) {
+          _groups = savedGroups;
+          _isLoading = false;
+          notifyListeners();
+          print('تم تحميل ${savedGroups.length} مجموعة من التخزين المحلي');
+          return;
+        }
+      }
+
+      // إذا كان التحديث إجباري أو لم تكن هناك مجموعات مخزنة، نقوم بتحميلها من الخادم
       if (_activePhoneId == null) {
         print('لا يوجد معرف هاتف نشط. محاولة تحميل المعرف المحفوظ...');
         await _loadSavedPhoneId(); // محاولة تحميل المعرف المحفوظ
@@ -214,17 +265,33 @@ class WhatsAppProvider with ChangeNotifier {
         return;
       }
 
-      print('جلب مجموعات واتساب باستخدام معرف الهاتف: $_activePhoneId');
+      print(
+          'جلب مجموعات واتساب من الخادم باستخدام معرف الهاتف: $_activePhoneId');
       _groups = await _service.getGroups(phoneId: _activePhoneId!);
-      print('تم جلب ${_groups.length} مجموعة');
+      print('تم جلب ${_groups.length} مجموعة من الخادم');
 
-      _lastGroupsUpdate = now;
+      // حفظ المجموعات في التخزين المحلي للاستخدام في المستقبل
+      await _saveGroupsToStorage(_groups);
+
+      _lastGroupsUpdate = DateTime.now();
     } catch (e) {
       _error = e.toString();
       print('خطأ في جلب مجموعات واتساب: $e');
-      // الاحتفاظ بالمجموعات القديمة في حالة فشل التحديث
+
+      // في حال الفشل، نحاول تحميل المجموعات من التخزين المحلي
       if (_groups.isEmpty) {
-        _groups = [];
+        try {
+          final savedGroups = await _loadGroupsFromStorage();
+          if (savedGroups.isNotEmpty) {
+            _groups = savedGroups;
+            print(
+                'تم تحميل ${savedGroups.length} مجموعة من التخزين المحلي بعد فشل التحميل من الخادم');
+          } else {
+            _groups = [];
+          }
+        } catch (_) {
+          _groups = [];
+        }
       }
     } finally {
       _isLoading = false;
@@ -252,8 +319,9 @@ class WhatsAppProvider with ChangeNotifier {
   // إرسال منشور إلى مجموعة واحدة مع آلية إعادة المحاولة
   Future<bool> sendPostToGroup({
     required String groupId,
-    String message = '', // جعل النص اختياريًا مع قيمة افتراضية فارغة
+    String message = '',
     File? mediaFile,
+    List<File>? mediaFiles,
     int maxRetries = 2,
   }) async {
     try {
@@ -264,13 +332,25 @@ class WhatsAppProvider with ChangeNotifier {
       }
 
       // التحقق من وجود محتوى للإرسال
-      bool hasMedia = mediaFile != null && await mediaFile.exists();
+      bool hasMediaFile = mediaFile != null && await mediaFile.exists();
+      bool hasMediaFiles = mediaFiles != null && mediaFiles.isNotEmpty;
+      bool hasMedia = hasMediaFile || hasMediaFiles;
       bool hasText = message.trim().isNotEmpty;
 
       if (!hasMedia && !hasText) {
         _error = 'يجب توفير نص أو وسائط للإرسال.';
         notifyListeners();
         return false;
+      }
+
+      // طباعة المعلومات التشخيصية
+      print(
+          'sendPostToGroup - groupId: $groupId, hasMediaFile: $hasMediaFile, hasMediaFiles: $hasMediaFiles (${mediaFiles?.length ?? 0})');
+      if (hasMediaFiles) {
+        for (int i = 0; i < mediaFiles!.length; i++) {
+          print(
+              'mediaFiles[$i]: ${mediaFiles[i].path}, exists: ${await mediaFiles[i].exists()}');
+        }
       }
 
       bool success = false;
@@ -286,20 +366,30 @@ class WhatsAppProvider with ChangeNotifier {
                 'إعادة محاولة إرسال المنشور إلى المجموعة $groupId، المحاولة ${attempt}');
           }
 
-          // إذا كانت هناك وسائط ولم ننجح في إرسالها في المحاولة الأولى، حاول إرسال النص فقط
-          if (mediaFile != null && attempt > 0 && message.trim().isNotEmpty) {
-            print('فشل إرسال الوسائط في المحاولة السابقة، إرسال النص فقط');
-            success = await _service.sendTextMessage(
+          // إذا كان لدينا وسائط متعددة، نستخدم ذلك أولاً
+          if (hasMediaFiles) {
+            success = await _service.sendPost(
               phoneId: _activePhoneId!,
               groupId: groupId,
               message: message,
+              mediaFiles: mediaFiles,
             );
-          } else {
+          }
+          // وإلا إذا كان لدينا ملف واحد، نستخدمه
+          else if (hasMediaFile) {
             success = await _service.sendPost(
               phoneId: _activePhoneId!,
               groupId: groupId,
               message: message,
               mediaFile: mediaFile,
+            );
+          }
+          // وإلا نرسل نص فقط
+          else {
+            success = await _service.sendTextMessage(
+              phoneId: _activePhoneId!,
+              groupId: groupId,
+              message: message,
             );
           }
 
@@ -313,6 +403,30 @@ class WhatsAppProvider with ChangeNotifier {
               ? e
               : WhatsAppApiException('خطأ في إرسال المنشور: $e');
           print('فشل في المحاولة $attempt: ${lastException.message}');
+
+          // إذا كانت هذه هي المحاولة الأخيرة ولكن لدينا صور متعددة، نحاول إرسال صورة واحدة
+          if (attempt == maxRetries &&
+              hasMediaFiles &&
+              mediaFiles!.length > 1) {
+            try {
+              print(
+                  'فشل إرسال الصور المتعددة، محاولة إرسال الصورة الأولى فقط...');
+              success = await _service.sendPost(
+                phoneId: _activePhoneId!,
+                groupId: groupId,
+                message: message,
+                mediaFile: mediaFiles.first,
+              );
+
+              if (success) {
+                _lastMessageResults[groupId] = true;
+                notifyListeners();
+                return true;
+              }
+            } catch (e) {
+              print('فشل أيضًا في إرسال الصورة الأولى فقط: $e');
+            }
+          }
         }
       }
 
@@ -334,6 +448,7 @@ class WhatsAppProvider with ChangeNotifier {
   Future<Map<String, bool>> sendPostToGroups({
     required String message,
     File? mediaFile,
+    List<File>? mediaFiles,
   }) async {
     _isLoading = true;
     _error = null;
@@ -351,6 +466,19 @@ class WhatsAppProvider with ChangeNotifier {
       int successCount = 0;
       int totalGroups = _selectedGroupIds.length;
 
+      // طباعة معلومات تشخيصية عن الملفات
+      if (mediaFiles != null) {
+        print('إرسال ${mediaFiles.length} ملف إلى ${totalGroups} مجموعة');
+        for (int i = 0; i < mediaFiles.length; i++) {
+          File file = mediaFiles[i];
+          bool exists = await file.exists();
+          print('ملف[$i]: ${file.path}, موجود: $exists');
+          if (exists) {
+            print('حجم الملف: ${await file.length()} بايت');
+          }
+        }
+      }
+
       // استخدام التأخير لتجنب القيود على معدل الاستخدام
       for (final groupId in _selectedGroupIds) {
         try {
@@ -358,6 +486,7 @@ class WhatsAppProvider with ChangeNotifier {
             groupId: groupId,
             message: message,
             mediaFile: mediaFile,
+            mediaFiles: mediaFiles,
           );
 
           results[groupId] = success;
@@ -368,7 +497,7 @@ class WhatsAppProvider with ChangeNotifier {
 
           // تأخير بين الطلبات
           if (_selectedGroupIds.length > 1) {
-            await Future.delayed(const Duration(seconds: 2));
+            await Future.delayed(const Duration(seconds: 3));
           }
 
           // تحديث النتائج باستمرار
@@ -428,6 +557,9 @@ class WhatsAppProvider with ChangeNotifier {
       final oldGroupCount = _groups.length;
       _groups = await _service.getGroups(phoneId: _activePhoneId!);
       print('تم جلب ${_groups.length} مجموعة');
+
+      // حفظ المجموعات المحدثة في التخزين المحلي
+      await _saveGroupsToStorage(_groups);
 
       _lastGroupsUpdate = DateTime.now();
 
