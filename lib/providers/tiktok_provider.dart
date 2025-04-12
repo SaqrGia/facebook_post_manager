@@ -149,8 +149,12 @@ class TikTokProvider with ChangeNotifier {
       const pollInterval = Duration(seconds: 2);
       bool shouldContinue = true;
       String? authCode;
+      int attempts = 0;
+      const maxAttempts = 30; // الحد الأقصى للمحاولات (60 ثانية)
 
-      while (shouldContinue && _isPollingQR) {
+      while (shouldContinue && _isPollingQR && attempts < maxAttempts) {
+        attempts++;
+
         try {
           final statusData = await _tikTokService.checkQRCodeStatus(
             _qrToken!,
@@ -165,14 +169,13 @@ class TikTokProvider with ChangeNotifier {
 
           // التحقق من حالة QR
           if (_qrStatus == 'confirmed') {
-            if (statusData.containsKey('redirect_uri')) {
+            // استخراج رمز التفويض من استجابة مختلفة
+            if (statusData.containsKey('code')) {
+              authCode = statusData['code'];
+              shouldContinue = false;
+            } else if (statusData.containsKey('redirect_uri')) {
               authCode =
                   _tikTokService.extractAuthCode(statusData['redirect_uri']);
-              shouldContinue = false;
-            }
-            // أضف هذا الجزء للتعامل مع التنسيق المختلف للاستجابة
-            else if (statusData.containsKey('code')) {
-              authCode = statusData['code'];
               shouldContinue = false;
             }
           } else if (_qrStatus == 'expired') {
@@ -192,15 +195,38 @@ class TikTokProvider with ChangeNotifier {
           await Future.delayed(pollInterval);
         } catch (e) {
           print('خطأ في استطلاع حالة QR: $e');
-          // يمكن استمرار الاستطلاع رغم الخطأ
+
+          // تقليل عدد محاولات التكرار للخطأ نفسه
+          if (attempts % 3 == 0) {
+            _error =
+                'حدث خطأ في استطلاع حالة QR، سيتم إعادة المحاولة... ($attempts/$maxAttempts)';
+            notifyListeners();
+          }
+
+          // الاستمرار في الاستطلاع حتى في حالة الخطأ
           await Future.delayed(pollInterval);
         }
+      }
+
+      // إذا تجاوزنا الحد الأقصى للمحاولات
+      if (attempts >= maxAttempts && shouldContinue) {
+        _error = 'استغرق تأكيد QR وقتًا طويلاً جدًا. يرجى المحاولة مرة أخرى.';
+        _qrStatus = 'expired';
+        notifyListeners();
+        return;
       }
 
       // إذا حصلنا على رمز تفويض، نستبدله برمز وصول
       if (authCode != null) {
         print('تم الحصول على رمز تفويض، جاري استبداله برمز وصول...');
-        await _processAuthCode(authCode);
+
+        try {
+          await _processAuthCode(authCode);
+        } catch (e) {
+          print('خطأ في معالجة رمز التفويض: $e');
+          _error = 'فشل في معالجة رمز التفويض: $e';
+          notifyListeners();
+        }
       }
     } finally {
       _isPollingQR = false;
@@ -237,50 +263,120 @@ class TikTokProvider with ChangeNotifier {
     try {
       print('معالجة رمز التفويض: $code');
 
-      // استبدال الرمز برمز الوصول
-      final tokenData = await _tikTokService.exchangeCodeForToken(code);
-      print('تم الحصول على بيانات الرمز: $tokenData');
+      // تنظيف رمز التفويض - إذا كان يحتوي على أحرف خاصة
+      final cleanedCode = code.contains('*') ? code.split('*')[0] : code;
+      print('رمز التفويض بعد التنظيف: $cleanedCode');
 
-      // استخراج معلومات الرمز
-      final accessToken = tokenData['access_token'];
-      final refreshToken = tokenData['refresh_token'];
-      final expiresIn = tokenData['expires_in'] as int;
+      // استبدال الرمز برمز الوصول
+      Map<String, dynamic> tokenData;
+      try {
+        tokenData = await _tikTokService.exchangeCodeForToken(code);
+        print('تم الحصول على بيانات الرمز: $tokenData');
+      } catch (e) {
+        print('فشل في استبدال الرمز، محاولة التنظيف وإعادة المحاولة: $e');
+        // محاولة ثانية بعد تنظيف الرمز
+        tokenData = await _tikTokService.exchangeCodeForToken(cleanedCode);
+      }
+
+      // استخراج معلومات الرمز - معالجة هياكل الاستجابة المختلفة
+      String? accessToken = tokenData['access_token'];
+      String? refreshToken = tokenData['refresh_token'];
+      int expiresIn = 0;
+
+      if (accessToken == null && tokenData.containsKey('data')) {
+        final data = tokenData['data'];
+        accessToken = data['access_token'];
+        refreshToken = data['refresh_token'];
+        expiresIn = data['expires_in'] ?? 86400;
+      } else {
+        expiresIn = tokenData['expires_in'] ?? 86400;
+      }
+
+      if (accessToken == null) {
+        throw Exception(
+            'لم يتم العثور على رمز الوصول في الاستجابة بعد المعالجة: $tokenData');
+      }
+
+      // تعيين قيمة افتراضية لـ refreshToken إذا كان null
+      refreshToken ??= '';
 
       // حساب تاريخ انتهاء الصلاحية
       final tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
 
-      // الحصول على معلومات المستخدم
-      final userData = await _tikTokService.getUserInfo(accessToken);
-      print('تم الحصول على بيانات المستخدم: $userData');
+      try {
+        // الحصول على معلومات المستخدم
+        final userData = await _tikTokService.getUserInfo(accessToken);
+        print('تم الحصول على بيانات المستخدم: $userData');
 
-      // إنشاء حساب تيك توك
-      final account = TikTokAccount(
-        id: userData['open_id'] ??
-            userData['user_id'] ??
-            DateTime.now().millisecondsSinceEpoch.toString(),
-        username: userData['display_name'] ?? 'مستخدم تيك توك',
-        avatarUrl: userData['avatar_url'],
-        accessToken: accessToken,
-        tokenExpiry: tokenExpiry,
-        refreshToken: refreshToken,
-      );
+        // معالجة هياكل بيانات API المختلفة
+        Map<String, dynamic> userInfo;
+        if (userData.containsKey('data')) {
+          userInfo = userData['data'];
+        } else {
+          userInfo = userData;
+        }
 
-      // التحقق مما إذا كان الحساب موجودًا بالفعل
-      final existingIndex = _accounts.indexWhere((a) => a.id == account.id);
-      if (existingIndex >= 0) {
-        // تحديث الحساب الموجود
-        _accounts[existingIndex] = account;
-      } else {
-        // إضافة حساب جديد
+        // إنشاء حساب تيك توك
+        final account = TikTokAccount(
+          id: userInfo['open_id'] ??
+              userInfo['user_id'] ??
+              userInfo['union_id'] ??
+              DateTime.now().millisecondsSinceEpoch.toString(),
+          username: userInfo['display_name'] ??
+              userInfo['nickname'] ??
+              'مستخدم تيك توك',
+          avatarUrl: userInfo['avatar_url'] ?? userInfo['avatar'],
+          accessToken: accessToken,
+          tokenExpiry: tokenExpiry,
+          refreshToken: refreshToken,
+        );
+
+        // التحقق مما إذا كان الحساب موجودًا بالفعل
+        final existingIndex = _accounts.indexWhere((a) => a.id == account.id);
+        if (existingIndex >= 0) {
+          // تحديث الحساب الموجود
+          _accounts[existingIndex] = account;
+        } else {
+          // إضافة حساب جديد
+          _accounts.add(account);
+        }
+
+        // حفظ الحسابات
+        await _saveAccounts();
+
+        // إعادة تعيين حالة الواجهة
+        _qrStatus = 'success';
+        _error = null;
+        notifyListeners();
+
+        return true;
+      } catch (e) {
+        print('خطأ في الحصول على بيانات المستخدم: $e');
+
+        // محاولة إنشاء حساب بدون بيانات المستخدم (الحد الأدنى)
+        final account = TikTokAccount(
+          id: 'tiktok_${DateTime.now().millisecondsSinceEpoch}',
+          username: 'مستخدم تيك توك جديد',
+          avatarUrl: null,
+          accessToken: accessToken,
+          tokenExpiry: tokenExpiry,
+          refreshToken: refreshToken ?? '',
+        );
+
         _accounts.add(account);
+        await _saveAccounts();
+
+        // نجحنا في إضافة الحساب رغم عدم الحصول على بياناته
+        _qrStatus = 'success_partial';
+        _error = 'تم الربط بنجاح ولكن لم نتمكن من جلب كامل معلومات الحساب';
+        notifyListeners();
+
+        return true;
       }
-
-      // حفظ الحسابات
-      await _saveAccounts();
-
-      return true;
     } catch (e) {
       print('خطأ في معالجة رمز التفويض: $e');
+      _error = 'فشل في ربط الحساب: $e';
+      notifyListeners();
       throw e;
     }
   }

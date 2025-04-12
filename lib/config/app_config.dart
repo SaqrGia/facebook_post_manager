@@ -15,11 +15,16 @@ class AppConfig {
   // TikTok Configuration
   static const String tiktokClientKey = 'sbawd7xakgmyt8g669';
   static const String tiktokClientSecret = 'MypxLqu31goKj7W7YSvnjVaYNDd6wxxI';
+
+  // عنوان إعادة التوجيه - تأكد من تسجيله بالضبط هكذا في لوحة تحكم TikTok
   static const String tiktokRedirectUri =
       'https://saqrgia.github.io/tiktok-auth-callback';
+
+  // عناوين تستخدم في مختلف مراحل المصادقة
   static const String tiktokAuthUrl =
       'https://www.tiktok.com/v2/auth/authorize';
   static const String tiktokApiBaseUrl = 'https://open.tiktokapis.com/v2';
+
   // يحتاج TikTok نطاق مختلف لطريقة مصادقة QR
   static const List<String> tiktokPermissions = [
     'user.info.basic',
