@@ -3,6 +3,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../config/app_config.dart';
 import '../models/user.dart';
 import '../models/page.dart';
+import '../models/tiktok_account.dart'; // إضافة استيراد النموذج المفقود
 
 class StorageService {
   final FlutterSecureStorage _secureStorage;
@@ -112,6 +113,40 @@ class StorageService {
     } catch (e) {
       print('خطأ في قراءة حالة تسجيل الدخول: $e');
       return false;
+    }
+  }
+
+  // حفظ حسابات تيك توك
+  Future<void> saveTikTokAccounts(List<TikTokAccount> accounts) async {
+    try {
+      final accountsJson =
+          accounts.map((account) => jsonEncode(account.toJson())).toList();
+      await _secureStorage.write(
+        key: AppConfig.tiktokAccountsKey,
+        value: jsonEncode(accountsJson),
+      );
+    } catch (e) {
+      print('خطأ في حفظ حسابات تيك توك: $e');
+      rethrow;
+    }
+  }
+
+  // الحصول على حسابات تيك توك
+  Future<List<TikTokAccount>> getTikTokAccounts() async {
+    try {
+      final accountsStr =
+          await _secureStorage.read(key: AppConfig.tiktokAccountsKey);
+      if (accountsStr != null && accountsStr.isNotEmpty) {
+        final List<dynamic> accountsJsonList = jsonDecode(accountsStr);
+        return accountsJsonList
+            .map((jsonStr) =>
+                TikTokAccount.fromJson(jsonDecode(jsonStr as String)))
+            .toList();
+      }
+      return [];
+    } catch (e) {
+      print('خطأ في قراءة حسابات تيك توك: $e');
+      return [];
     }
   }
 

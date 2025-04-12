@@ -5,12 +5,14 @@ import 'config/theme.dart';
 import 'providers/auth_provider.dart';
 import 'providers/pages_provider.dart';
 import 'providers/whatsapp_provider.dart';
+import 'providers/tiktok_provider.dart';
 import 'services/whatsapp_service.dart';
 import 'screens/auth/login_screen.dart';
-import 'screens/auth/splash_screen.dart'; // إضافة استيراد شاشة البدء
+import 'screens/auth/splash_screen.dart';
 import 'screens/posts/create_post_screen.dart';
 import 'screens/pages/pages_screen.dart';
 import 'screens/whatsapp/whatsapp_setup_screen.dart';
+import 'screens/tiktok/tiktok_setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,6 +42,9 @@ class MyApp extends StatelessWidget {
             service: WhatsAppService(),
           ),
         ),
+        ChangeNotifierProvider<TikTokProvider>(
+          create: (_) => TikTokProvider(),
+        ),
       ],
       child: MaterialApp(
         title: 'مدير صفحات التواصل الاجتماعي',
@@ -51,13 +56,14 @@ class MyApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         supportedLocales: const [Locale('ar')],
-        initialRoute: '/splash', // تغيير المسار الأولي إلى شاشة البدء
+        initialRoute: '/splash',
         routes: {
-          '/splash': (context) => const SplashScreen(), // إضافة مسار شاشة البدء
+          '/splash': (context) => const SplashScreen(),
           '/login': (context) => const LoginScreen(),
           '/create_post': (context) => const CreatePostScreen(),
           '/pages': (context) => const PagesScreen(),
           '/whatsapp_setup': (context) => const WhatsAppSetupScreen(),
+          '/tiktok_setup': (context) => const TikTokSetupScreen(),
         },
       ),
     );
