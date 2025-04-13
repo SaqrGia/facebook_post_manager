@@ -82,26 +82,76 @@ class _TikTokAccountSelectionTile extends StatelessWidget {
       builder: (context, provider, _) {
         final isSelected = provider.isAccountSelected(account.id);
 
-        return CheckboxListTile(
-          value: isSelected,
-          onChanged: (_) => provider.toggleAccountSelection(account.id),
-          title: Text('@${account.username}'),
-          subtitle: account.isTokenExpired
-              ? const Text('انتهت صلاحية الرمز - انقر للتحديث',
-                  style: TextStyle(color: Colors.red))
-              : const Text('حساب تيك توك'),
-          secondary: account.avatarUrl != null
-              ? CircleAvatar(
-                  backgroundImage: NetworkImage(account.avatarUrl!),
-                  backgroundColor: Colors.black,
-                )
-              : const CircleAvatar(
-                  backgroundColor: Colors.black, // لون تيك توك
-                  child: Icon(Icons.music_note, color: Colors.white),
-                ),
-          // تمييز حسابات تيك توك بلون مختلف
-          tileColor: Colors.black.withOpacity(0.05),
-          activeColor: Colors.black,
+        return Column(
+          children: [
+            CheckboxListTile(
+              value: isSelected,
+              onChanged: (_) => provider.toggleAccountSelection(account.id),
+              title: Text('@${account.username}'),
+              subtitle: account.isTokenExpired
+                  ? const Text('انتهت صلاحية الرمز - انقر للتحديث',
+                      style: TextStyle(color: Colors.red))
+                  : const Text('حساب تيك توك'),
+              secondary: account.avatarUrl != null
+                  ? CircleAvatar(
+                      backgroundImage: NetworkImage(account.avatarUrl!),
+                      backgroundColor: Colors.black,
+                    )
+                  : const CircleAvatar(
+                      backgroundColor: Colors.black, // لون تيك توك
+                      child: Icon(Icons.music_note, color: Colors.white),
+                    ),
+              // تمييز حسابات تيك توك بلون مختلف
+              tileColor: Colors.black.withOpacity(0.05),
+              activeColor: Colors.black,
+            ),
+            // أزرار التحديث وإعادة الربط
+            Padding(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  // زر تحديث معلومات الحساب
+                  IconButton(
+                    icon:
+                        const Icon(Icons.refresh, color: Colors.blue, size: 20),
+                    tooltip: 'تحديث معلومات الحساب',
+                    onPressed: () async {
+                      final result =
+                          await provider.refreshAccountInfo(account.id);
+                      if (result && context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('تم تحديث معلومات الحساب بنجاح'),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                  // زر إعادة ربط الحساب
+                  TextButton.icon(
+                    onPressed: () {
+                      // حذف الحساب
+                      provider.removeAccount(account.id);
+                      // التوجه إلى شاشة QR
+                      Navigator.pushNamed(context, '/tiktok_setup');
+                    },
+                    icon: const Icon(Icons.link, size: 18),
+                    label: const Text('إعادة ربط الحساب',
+                        style: TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(
+                      backgroundColor: Colors.grey.withOpacity(0.1),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 0),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+          ],
         );
       },
     );

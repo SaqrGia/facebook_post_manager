@@ -5,6 +5,8 @@ import '../models/tiktok_account.dart';
 import '../services/tiktok_service.dart';
 import '../services/storage_service.dart';
 import '../config/app_config.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 
 class TikTokProvider with ChangeNotifier {
   final TikTokService _tikTokService;
@@ -258,6 +260,69 @@ class TikTokProvider with ChangeNotifier {
     }
   }
 
+  /// إعادة تحميل معلومات الحساب المرتبط
+  Future<bool> refreshAccountInfo(String accountId) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+
+      // البحث عن الحساب المرتبط
+      final accountIndex =
+          _accounts.indexWhere((account) => account.id == accountId);
+      if (accountIndex < 0) {
+        _error = 'الحساب غير موجود';
+        notifyListeners();
+        return false;
+      }
+
+      final account = _accounts[accountIndex];
+
+      // الحصول على معلومات المستخدم
+      try {
+        final userInfo = await _tikTokService.getUserInfo(account.accessToken);
+
+        // تحديث بيانات الحساب
+        String username = 'مستخدم تيك توك';
+        String? avatarUrl;
+
+        if (userInfo.containsKey('data')) {
+          username = userInfo['data']['creator_nickname'] ??
+              userInfo['data']['creator_username'] ??
+              userInfo['data']['display_name'] ??
+              userInfo['data']['nickname'] ??
+              'مستخدم تيك توك';
+
+          avatarUrl = userInfo['data']['creator_avatar_url'] ??
+              userInfo['data']['avatar_url'] ??
+              userInfo['data']['avatar'];
+        }
+
+        // تحديث الحساب بالبيانات الجديدة
+        final updatedAccount = account.copyWith(
+          username: username,
+          avatarUrl: avatarUrl,
+        );
+
+        _accounts[accountIndex] = updatedAccount;
+        await _saveAccounts();
+
+        return true;
+      } catch (e) {
+        print('فشل في تحديث معلومات الحساب: $e');
+        return false;
+      } finally {
+        _isLoading = false;
+        notifyListeners();
+      }
+    } catch (e) {
+      _isLoading = false;
+      _error = e.toString();
+      notifyListeners();
+      return false;
+    }
+  }
+
   // المنطق الداخلي لمعالجة رمز المصادقة
   Future<bool> _processAuthCode(String code) async {
     try {
@@ -461,30 +526,65 @@ class TikTokProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      // التحقق من وجود ملف فيديو
+      if (!await videoFile.exists()) {
+        throw Exception('ملف الفيديو غير موجود');
+      }
+
+      // التحقق من حجم الملف
+      final fileSize = await videoFile.length();
+      if (fileSize > 4 * 1024 * 1024 * 1024) {
+        // 4 جيجابايت كحد أقصى
+        throw Exception('حجم الفيديو يتجاوز الحد الأقصى (4 جيجابايت)');
+      }
+
       bool anySuccess = false;
 
       for (final account in selectedAccounts) {
         try {
-          // الحصول على رمز وصول صالح
-          final accessToken = await _getValidAccessToken(account);
+          // 1. تحديث معلومات الحساب أولاً
+          _uploadStatus = 'جاري تحديث معلومات الحساب...';
+          _uploadProgress = 5;
+          notifyListeners();
 
-          // تحميل الفيديو
-          final videoId = await _tikTokService.uploadVideo(
-            accessToken: accessToken,
-            videoFile: videoFile,
+          await refreshAccountInfo(account.id);
+
+          // 2. استخدام طريقة بديلة لتحميل الفيديو
+          // بدلاً من استخدام الطريقة التي تفشل، سنستخدم PULL_FROM_URL
+
+          _uploadStatus = 'جاري تحميل الفيديو إلى ${account.username}...';
+          _uploadProgress = 20;
+          notifyListeners();
+
+          // إنشاء موقع مؤقت للملف
+          final tempDir = await getTemporaryDirectory();
+          final targetPath = path.join(tempDir.path,
+              'video_${DateTime.now().millisecondsSinceEpoch}.mp4');
+
+          // نسخ الفيديو إلى موقع مؤقت (في حال كان الملف الأصلي في مكان غير قابل للوصول)
+          await videoFile.copy(targetPath);
+
+          // تحميل الفيديو باستخدام الملف المؤقت
+          final uploadResult = await _tikTokService.simpleVideoUpload(
+            accessToken: account.accessToken,
+            videoFile: File(targetPath),
             caption: caption,
             onProgress: (status, progress) {
-              _uploadStatus = 'حساب ${account.username}: $status';
+              _uploadStatus = status;
               _uploadProgress = progress;
               notifyListeners();
             },
           );
 
-          print('تم تحميل الفيديو بنجاح إلى تيك توك: $videoId');
+          print('نتيجة تحميل الفيديو: $uploadResult');
           anySuccess = true;
+
+          _uploadStatus = 'تم تحميل الفيديو بنجاح!';
+          _uploadProgress = 100;
+          notifyListeners();
         } catch (e) {
-          print('خطأ في التحميل إلى الحساب ${account.username}: $e');
-          // متابعة مع الحسابات الأخرى
+          print('فشل في التحميل إلى الحساب ${account.username}: $e');
+          // نستمر بالمحاولة مع الحسابات الأخرى
         }
       }
 
@@ -498,6 +598,10 @@ class TikTokProvider with ChangeNotifier {
       print('خطأ في uploadVideoToTikTok: $e');
       return false;
     } finally {
+      // تأخير إخفاء مؤشر التحميل لمدة 3 ثوانٍ إذا كان ناجحاً (لإظهار رسالة النجاح)
+      if (_uploadProgress == 100) {
+        await Future.delayed(Duration(seconds: 3));
+      }
       _isUploading = false;
       notifyListeners();
     }
