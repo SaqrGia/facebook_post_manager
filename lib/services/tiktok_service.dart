@@ -1,13 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
-import 'package:path/path.dart' as path;
-import '../config/app_config.dart';
-import '../models/tiktok_account.dart';
 import 'package:mime/mime.dart';
+import '../config/app_config.dart';
 
+/// استثناء مخصص لأخطاء TikTok API
 class TikTokApiException implements Exception {
   final String message;
   final int? statusCode;
@@ -18,32 +16,53 @@ class TikTokApiException implements Exception {
   String toString() => message;
 }
 
+/// خدمة للتواصل مع TikTok API v2
+///
+/// تتعامل هذه الخدمة مع المصادقة، ونشر المحتوى، والحصول على معلومات المستخدم
+/// باستخدام واجهة برمجة تطبيقات TikTok v2
 class TikTokService {
   final http.Client _client;
 
+  // عناوين API وفقًا للتوثيق الرسمي v2
+  static const String _authUrl = 'https://www.tiktok.com/v2/auth/authorize/';
+  static const String _tokenUrl = 'https://open.tiktokapis.com/v2/oauth/token/';
+  static const String _userInfoUrl =
+      'https://open.tiktokapis.com/v2/user/info/';
+  static const String _qrCodeUrl =
+      'https://open.tiktokapis.com/v2/oauth/get_qrcode/';
+  static const String _checkQrCodeUrl =
+      'https://open.tiktokapis.com/v2/oauth/check_qrcode/';
+  static const String _refreshTokenUrl =
+      'https://open.tiktokapis.com/v2/oauth/refresh_token/';
+
+  // عناوين نشر المحتوى
+  static const String _creatorInfoUrl =
+      'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
+  static const String _videoInitUrl =
+      'https://open.tiktokapis.com/v2/post/publish/video/init/';
+  static const String _publishStatusUrl =
+      'https://open.tiktokapis.com/v2/post/publish/status/fetch/';
+
   TikTokService({http.Client? client}) : _client = client ?? http.Client();
 
-  // إنشاء client_ticket فريد
-  String generateClientTicket() {
-    final random = Random.secure();
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    return List.generate(16, (_) => chars[random.nextInt(chars.length)]).join();
-  }
-
-  // الحصول على رابط المصادقة التقليدي (للاحتفاظ بالتوافقية)
+  /// الحصول على رابط المصادقة - للأساليب التقليدية (غير QR)
   Uri getAuthorizationUrl() {
-    return Uri.parse(AppConfig.tiktokAuthUrl).replace(
+    final state = 'tiktok_auth_${DateTime.now().millisecondsSinceEpoch}';
+
+    return Uri.parse(_authUrl).replace(
       queryParameters: {
         'client_key': AppConfig.tiktokClientKey,
         'redirect_uri': AppConfig.tiktokRedirectUri,
         'response_type': 'code',
         'scope': AppConfig.tiktokPermissions.join(','),
-        'state': 'myappstate123',
+        'state': state,
       },
     );
   }
 
-  // طلب رمز QR من TikTok
+  /// طلب رمز QR للمصادقة
+  ///
+  /// يعود بعنوان URL لرمز QR وtoken للتحقق من حالة المسح
   Future<Map<String, dynamic>> getQRCode() async {
     try {
       print('طلب رمز QR من TikTok...');
@@ -66,22 +85,35 @@ class TikTokService {
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = json.decode(response.body);
 
-        if (data.containsKey('error')) {
+        // Verificar estructura de error
+        if (data.containsKey('error') &&
+            data['error'] is Map &&
+            data['error'].containsKey('code') &&
+            data['error']['code'] != 'ok') {
           throw TikTokApiException(
-            'خطأ في طلب رمز QR: ${data['error_description'] ?? data['error']}',
+            'خطأ في طلب رمز QR: ${data['error']['message'] ?? "Error desconocido"}',
+            statusCode: response.statusCode,
           );
         }
 
-        if (!data.containsKey('scan_qrcode_url') ||
-            !data.containsKey('token')) {
+        // Verificar si data['data'] existe
+        if (!data.containsKey('data') || data['data'] == null) {
           throw TikTokApiException('بيانات رمز QR غير مكتملة في الاستجابة');
         }
 
-        // إنشاء وإضافة client_ticket
-        final clientTicket = generateClientTicket();
-        String qrUrl = data['scan_qrcode_url'];
+        // Extraer datos del objeto data['data']
+        final dataObject = data['data'];
 
-        // استبدال client_ticket في عنوان URL
+        if (!dataObject.containsKey('scan_qrcode_url') ||
+            !dataObject.containsKey('token')) {
+          throw TikTokApiException('بيانات رمز QR غير مكتملة في الاستجابة');
+        }
+
+        // Generar client_ticket
+        final clientTicket = 'fixed_client_ticket';
+        String qrUrl = dataObject['scan_qrcode_url'];
+
+        // Reemplazar client_ticket en la URL
         if (qrUrl.contains('client_ticket=tobefilled')) {
           qrUrl = qrUrl.replaceAll(
               'client_ticket=tobefilled', 'client_ticket=$clientTicket');
@@ -90,14 +122,13 @@ class TikTokService {
           qrUrl = qrUrl.replaceAllMapped(
               regex, (match) => 'client_ticket=$clientTicket');
         } else {
-          // إضافة client_ticket إذا لم يكن موجودًا
           final separator = qrUrl.contains('?') ? '&' : '?';
           qrUrl = '$qrUrl${separator}client_ticket=$clientTicket';
         }
 
         return {
           'qr_url': qrUrl,
-          'token': data['token'],
+          'token': dataObject['token'],
           'client_ticket': clientTicket,
         };
       } else {
@@ -113,9 +144,10 @@ class TikTokService {
     }
   }
 
-  // التحقق من حالة رمز QR
-  Future<Map<String, dynamic>> checkQRCodeStatus(
-      String token, String clientTicket) async {
+  /// التحقق من حالة رمز QR
+  ///
+  /// يستخدم للتحقق مما إذا تم مسح الرمز وتأكيده
+  Future<Map<String, dynamic>> checkQRCodeStatus(String token) async {
     try {
       print('التحقق من حالة رمز QR...');
 
@@ -137,22 +169,28 @@ class TikTokService {
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = json.decode(response.body);
 
-        if (data.containsKey('error')) {
+        // Verificar estructura de error correcta
+        if (data.containsKey('error') &&
+            data['error'] is Map &&
+            data['error'].containsKey('code') &&
+            data['error']['code'] != 'ok') {
           throw TikTokApiException(
-            'خطأ في التحقق من حالة QR: ${data['error_description'] ?? data['error']}',
+            'خطأ في التحقق من حالة QR: ${data['error']['message'] ?? "Error desconocido"}',
+            statusCode: response.statusCode,
           );
         }
 
-        // التحقق من سلامة client_ticket إذا كان موجودًا
-        if (data.containsKey('client_ticket') &&
-            data['client_ticket'] != null &&
-            data['client_ticket'] != '' &&
-            data['client_ticket'] != clientTicket) {
-          throw TikTokApiException(
-              'عدم تطابق client_ticket، قد تكون هناك محاولة اختراق');
+        // Verificar si data['data'] existe y no es null
+        if (!data.containsKey('data') || data['data'] == null) {
+          return {'status': 'unknown', 'code': null};
         }
 
-        return data;
+        // Retornar los datos de manera segura
+        return {
+          'status': data['data']['status'] ?? 'unknown',
+          'code': data['data']
+              ['code'] // Puede ser null si no está en estado "confirmed"
+        };
       } else {
         throw TikTokApiException(
           'فشل في التحقق من حالة QR: ${response.body}',
@@ -166,381 +204,57 @@ class TikTokService {
     }
   }
 
-  // استخلاص رمز التفويض من URI
-  String? extractAuthCode(String redirectUri) {
-    try {
-      final uri = Uri.parse(redirectUri);
-      return uri.queryParameters['code'];
-    } catch (e) {
-      print('خطأ في استخلاص رمز التفويض: $e');
-      return null;
-    }
-  }
-
-  // استبدال رمز المصادقة برمز الوصول
+  /// استبدال رمز المصادقة برمز الوصول
+  ///
+  /// يستخدم رمز المصادقة (الذي تم الحصول عليه من عملية المصادقة) للحصول على رمز الوصول
   Future<Map<String, dynamic>> exchangeCodeForToken(String authCode) async {
     try {
-      print('استبدال رمز المصادقة برمز الوصول...');
-
-      // تنظيف رمز التفويض - إزالة كل ما بعد علامة *
-      final String originalCode = authCode;
-      String cleanedCode = authCode;
-      if (authCode.contains('*')) {
-        cleanedCode = authCode.split('*')[0];
-      }
-
-      // فك ترميز الرمز كما هو مطلوب في التوثيق
-      cleanedCode = Uri.decodeComponent(cleanedCode);
-
-      print('رمز التفويض الأصلي: $originalCode');
-      print('رمز التفويض بعد التنظيف: $cleanedCode');
-
-      // قائمة من التوليفات والإعدادات المختلفة للمحاولة
-      final apiConfigurations = [
-        // الإعداد الأساسي المطابق للتوثيق
-        {
-          'url': 'https://open.tiktokapis.com/v2/oauth/token/',
-          'headers': {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Cache-Control': 'no-cache',
-          },
-          'params': {
-            'client_key': AppConfig.tiktokClientKey,
-            'client_secret': AppConfig.tiktokClientSecret,
-            'code': cleanedCode,
-            'grant_type': 'authorization_code',
-            'redirect_uri': AppConfig.tiktokRedirectUri,
-          }
-        },
-        // المحاولة الثانية - استخدام الرمز الأصلي بدون تنظيف
-        {
-          'url': 'https://open.tiktokapis.com/v2/oauth/token/',
-          'headers': {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Cache-Control': 'no-cache',
-          },
-          'params': {
-            'client_key': AppConfig.tiktokClientKey,
-            'client_secret': AppConfig.tiktokClientSecret,
-            'code': originalCode,
-            'grant_type': 'authorization_code',
-            'redirect_uri': AppConfig.tiktokRedirectUri,
-          }
-        },
-        // المحاولة الثالثة - نقطة نهاية بديلة
-        {
-          'url': 'https://open-api.tiktok.com/oauth/access_token/',
-          'headers': {
-            'Content-Type': 'application/x-www-form-urlencoded',
-          },
-          'params': {
-            'client_key': AppConfig.tiktokClientKey,
-            'client_secret': AppConfig.tiktokClientSecret,
-            'code': cleanedCode,
-            'grant_type': 'authorization_code',
-          }
-        },
-      ];
-
-      // تجربة كل تكوين بالتسلسل حتى ينجح أحدها
-      for (final config in apiConfigurations) {
-        try {
-          print('محاولة استبدال الرمز باستخدام: ${config['url']}');
-
-          final request =
-              http.Request('POST', Uri.parse(config['url'] as String));
-
-          request.headers.addAll(config['headers'] as Map<String, String>);
-          request.bodyFields = config['params'] as Map<String, String>;
-
-          print('معلمات الطلب: ${request.bodyFields}');
-
-          final streamedResponse = await request.send();
-          final response = await http.Response.fromStream(streamedResponse);
-
-          print('استجابة استبدال الرمز: ${response.statusCode}');
-          print('محتوى الاستجابة: ${response.body}');
-
-          if (response.statusCode == 200) {
-            final Map<String, dynamic> data = json.decode(response.body);
-
-            // التحقق من وجود بيانات مفيدة
-            if (data.containsKey('access_token')) {
-              return data;
-            } else if (data.containsKey('data') &&
-                data['data'] is Map &&
-                data['data'].containsKey('access_token')) {
-              // بعض إصدارات API تيك توك تعيد البيانات مضمنة في حقل 'data'
-              final Map<String, dynamic> resultData =
-                  Map<String, dynamic>.from(data['data'] as Map);
-              return resultData;
-            } else {
-              print('تم استلام استجابة بتنسيق غير متوقع: $data');
-              continue; // تجربة التكوين التالي
-            }
-          }
-        } catch (e) {
-          print('فشلت محاولة باستخدام ${config['url']}: $e');
-          // استمر مع التكوين التالي
-        }
-      }
-
-      // إذا وصلنا إلى هنا، نجرب الحصول على client access token
-      print(
-          'فشلت جميع محاولات استبدال الرمز، محاولة الحصول على client access token...');
-      return await _getClientAccessToken();
-    } catch (e) {
-      print('خطأ في استبدال رمز المصادقة: $e');
-      if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في الاتصال: $e');
-    }
-  }
-
-// إضافة دالة للحصول على client access token كخيار بديل
-  Future<Map<String, dynamic>> _getClientAccessToken() async {
-    try {
-      print('جاري الحصول على client access token...');
-
-      final request = http.Request(
-          'POST', Uri.parse('https://open.tiktokapis.com/v2/oauth/token/'));
-
-      request.headers.addAll({
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Cache-Control': 'no-cache',
-      });
-
-      request.bodyFields = {
-        'client_key': AppConfig.tiktokClientKey,
-        'client_secret': AppConfig.tiktokClientSecret,
-        'grant_type': 'client_credentials',
-      };
-
-      final streamedResponse = await request.send();
-      final response = await http.Response.fromStream(streamedResponse);
-
-      print('استجابة client access token: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-
-        if (data.containsKey('access_token')) {
-          // تكوين بيانات client access token لتتوافق مع الهيكل المتوقع
-          final String timestamp =
-              DateTime.now().millisecondsSinceEpoch.toString();
-          return {
-            'access_token': data['access_token'],
-            'expires_in': data['expires_in'] ?? 7200,
-            'token_type': data['token_type'] ?? 'Bearer',
-            'open_id': 'client_access_token_$timestamp',
-            'refresh_token': '',
-            'refresh_expires_in': 0,
-            'scope': '',
-          };
-        }
-      }
-
-      // إذا فشل الحصول على client access token، نعيد بيانات وهمية
-      // هذا سيسمح للتطبيق بالاستمرار مع وظائف محدودة
-      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      return {
-        'access_token': 'dummy_token_$timestamp',
-        'expires_in': 3600,
-        'open_id': 'dummy_client_$timestamp',
-        'refresh_token': '',
-        'refresh_expires_in': 0,
-        'token_type': 'Bearer',
-        'scope': '',
-      };
-    } catch (e) {
-      print('خطأ في الحصول على client access token: $e');
-
-      // حتى في حالة الخطأ، نعيد بيانات وهمية
-      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      return {
-        'access_token': 'error_fallback_token_$timestamp',
-        'expires_in': 3600,
-        'open_id': 'error_fallback_id_$timestamp',
-        'refresh_token': '',
-        'refresh_expires_in': 0,
-        'token_type': 'Bearer',
-        'scope': '',
-      };
-    }
-  }
-
-// دالة مساعدة لتجربة نقطة نهاية بديلة
-  Future<Map<String, dynamic>> _tryAlternativeTokenEndpoint(String code) async {
-    try {
-      // نقطة نهاية بديلة (v2.1 بدلاً من v2)
-      final url = 'https://open-api.tiktok.com/oauth/access_token/';
-
-      final Map<String, String> params = {
-        'client_key': AppConfig.tiktokClientKey,
-        'client_secret': AppConfig.tiktokClientSecret,
-        'code': code,
-        'grant_type': 'authorization_code',
-      };
-
-      print('محاولة بديلة - URL: $url');
-      print('محاولة بديلة - المعلمات: $params');
-
       final response = await _client.post(
-        Uri.parse(url),
-        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-        body: params,
+        Uri.parse(_tokenUrl),
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Cache-Control': 'no-cache',
+        },
+        body: {
+          'client_key': AppConfig.tiktokClientKey,
+          'client_secret': AppConfig.tiktokClientSecret,
+          'code': authCode,
+          'grant_type': 'authorization_code',
+          'redirect_uri': AppConfig.tiktokRedirectUri,
+        },
       );
 
-      print('استجابة النقطة البديلة: ${response.statusCode}');
-      print('محتوى الاستجابة البديلة: ${response.body}');
-
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
+        final data = json.decode(response.body);
 
-        // نقطة النهاية البديلة قد تستخدم هيكل بيانات مختلف
-        if (data.containsKey('data')) {
-          final accessData = data['data'];
-          return {
-            'access_token': accessData['access_token'],
-            'refresh_token': accessData['refresh_token'] ?? '',
-            'expires_in': accessData['expires_in'] ?? 86400,
-            'scope': accessData['scope'] ?? ''
-          };
+        if (data['error']['code'] != 'ok') {
+          throw TikTokApiException(
+            'خطأ في استبدال الرمز: ${data['error']['message']}',
+            statusCode: response.statusCode,
+          );
         }
 
-        return data;
+        return data['data'];
       } else {
         throw TikTokApiException(
-          'فشل أيضًا مع نقطة النهاية البديلة: ${response.body}',
+          'فشل في استبدال رمز المصادقة: ${response.body}',
           statusCode: response.statusCode,
         );
       }
     } catch (e) {
-      print('خطأ في محاولة النقطة البديلة: $e');
-      throw TikTokApiException('خطأ في محاولة النقطة البديلة: $e');
+      if (e is TikTokApiException) rethrow;
+      throw TikTokApiException('خطأ في استبدال رمز المصادقة: $e');
     }
   }
 
-  // الحصول على معلومات المستخدم
-  Future<Map<String, dynamic>> getUserInfo(String accessToken) async {
-    try {
-      print('جلب معلومات مستخدم تيك توك...');
-
-      // محاولة استخدام نقطة نهاية v2 أولاً
-      final response = await _client.get(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/user/info/'),
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-        },
-      );
-
-      print('استجابة معلومات المستخدم: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-
-        if (data.containsKey('error')) {
-          // إذا كان هناك خطأ، نجرب نقطة نهاية بديلة
-          print(
-              'خطأ في الاستجابة: ${data['error']}. محاولة استخدام نقطة نهاية بديلة...');
-          return await _tryAlternativeUserInfoEndpoint(accessToken);
-        }
-
-        if (!data.containsKey('data') && !data.containsKey('user_id')) {
-          // إذا لم تكن البيانات في الهيكل المتوقع، نجرب نقطة نهاية بديلة
-          print('هيكل بيانات غير متوقع. محاولة استخدام نقطة نهاية بديلة...');
-          return await _tryAlternativeUserInfoEndpoint(accessToken);
-        }
-
-        return data;
-      } else {
-        // إذا فشل الطلب، نجرب نقطة نهاية بديلة
-        print(
-            'فشل استجابة المستخدم: ${response.statusCode}. محاولة استخدام نقطة نهاية بديلة...');
-        return await _tryAlternativeUserInfoEndpoint(accessToken);
-      }
-    } catch (e) {
-      print('خطأ في الحصول على معلومات المستخدم: $e');
-
-      // إذا فشلت المحاولة الأولى، نجرب نقطة نهاية بديلة
-      try {
-        return await _tryAlternativeUserInfoEndpoint(accessToken);
-      } catch (altError) {
-        // إذا فشلت جميع المحاولات، نعيد خطأ
-        throw TikTokApiException(
-            'فشل في الحصول على معلومات المستخدم: $e (بديل: $altError)');
-      }
-    }
-  }
-
-// دالة مساعدة لتجربة نقاط نهاية بديلة للحصول على معلومات المستخدم
-  Future<Map<String, dynamic>> _tryAlternativeUserInfoEndpoint(
-      String accessToken) async {
-    try {
-      // مصفوفة من نقاط النهاية البديلة للتجربة
-      final endpoints = [
-        'https://open-api.tiktok.com/oauth/userinfo/',
-        'https://open.tiktokapis.com/v2.1/user/info/',
-        'https://open.tiktokapis.com/v2/user/info/',
-      ];
-
-      for (final endpoint in endpoints) {
-        try {
-          print('محاولة نقطة نهاية بديلة: $endpoint');
-
-          final response = await _client.get(
-            Uri.parse(endpoint),
-            headers: {
-              'Authorization': 'Bearer $accessToken',
-            },
-          );
-
-          print('استجابة نقطة النهاية البديلة: ${response.statusCode}');
-          print('محتوى الاستجابة البديلة: ${response.body}');
-
-          if (response.statusCode == 200) {
-            final data = json.decode(response.body);
-
-            // التحقق من وجود بيانات مفيدة
-            if (data != null &&
-                (data.containsKey('data') ||
-                    data.containsKey('user_id') ||
-                    data.containsKey('open_id'))) {
-              return data;
-            }
-          }
-        } catch (e) {
-          print('فشل محاولة نقطة النهاية البديلة $endpoint: $e');
-          // نستمر مع النقاط الأخرى
-        }
-      }
-
-      // إذا وصلنا إلى هنا، نحاول إرجاع بيانات مصطنعة كحل أخير
-      return {
-        'data': {
-          'open_id': 'unknown_${DateTime.now().millisecondsSinceEpoch}',
-          'display_name': 'مستخدم تيك توك',
-          'avatar_url': null
-        }
-      };
-    } catch (e) {
-      print('فشل في جميع محاولات الحصول على معلومات المستخدم: $e');
-      throw TikTokApiException(
-          'فشل في جميع محاولات الحصول على معلومات المستخدم: $e');
-    }
-  }
-
-  // تحديث رمز الوصول
+  /// تجديد رمز الوصول
+  ///
+  /// يستخدم رمز التحديث للحصول على رمز وصول جديد
   Future<Map<String, dynamic>> refreshAccessToken(String refreshToken) async {
     try {
-      print('تحديث رمز الوصول لتيك توك...');
-
       final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/oauth/refresh_token/'),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        Uri.parse(_refreshTokenUrl),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'client_key': AppConfig.tiktokClientKey,
           'client_secret': AppConfig.tiktokClientSecret,
@@ -549,45 +263,117 @@ class TikTokService {
         },
       );
 
-      print('استجابة تحديث الرمز: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-        if (!data.containsKey('access_token')) {
-          throw TikTokApiException('لم يتم العثور على رمز الوصول في الاستجابة');
+        final data = json.decode(response.body);
+
+        if (data['error']['code'] != 'ok') {
+          throw TikTokApiException(
+            'خطأ في تجديد الرمز: ${data['error']['message']}',
+            statusCode: response.statusCode,
+          );
         }
-        return data;
+
+        return data['data'];
       } else {
         throw TikTokApiException(
-          'فشل في تحديث رمز الوصول: ${response.body}',
+          'فشل في تجديد رمز الوصول: ${response.body}',
           statusCode: response.statusCode,
         );
       }
     } catch (e) {
-      print('خطأ في تحديث رمز الوصول: $e');
       if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في الاتصال: $e');
+      throw TikTokApiException('خطأ في تجديد رمز الوصول: $e');
     }
   }
 
-  // بقية الدوال المتعلقة بتحميل الفيديو ونشره - لم يتم تغييرها من التنفيذ السابق
-
-  // بدء تحميل فيديو
-  /// بدء تحميل الفيديو وفقاً للتوثيق الجديد
-  Future<Map<String, dynamic>> initVideoUpload(String accessToken, int fileSize,
-      String caption, Map<String, dynamic> creatorInfo) async {
+  /// الحصول على معلومات المستخدم
+  ///
+  /// يستخدم رمز الوصول للحصول على معلومات المستخدم
+  Future<Map<String, dynamic>> getUserInfo(String accessToken) async {
     try {
-      print('بدء تحميل فيديو تيك توك باستخدام واجهة API الجديدة...');
+      final response = await _client.get(
+        Uri.parse(_userInfoUrl).replace(
+          queryParameters: {
+            'fields':
+                'open_id,union_id,avatar_url,display_name,bio_description,profile_deep_link',
+          },
+        ),
+        headers: {'Authorization': 'Bearer $accessToken'},
+      );
 
-      // الحصول على خيارات الخصوصية المتاحة من معلومات المستخدم
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data['error']['code'] != 'ok') {
+          throw TikTokApiException(
+            'خطأ في الحصول على معلومات المستخدم: ${data['error']['message']}',
+            statusCode: response.statusCode,
+          );
+        }
+
+        return data['data'];
+      } else {
+        throw TikTokApiException(
+          'فشل في الحصول على معلومات المستخدم: ${response.body}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is TikTokApiException) rethrow;
+      throw TikTokApiException('خطأ في الحصول على معلومات المستخدم: $e');
+    }
+  }
+
+  /// استعلام معلومات المنشئ وخياراته المتاحة
+  Future<Map<String, dynamic>> queryCreatorInfo(String accessToken) async {
+    try {
+      final response = await _client.post(
+        Uri.parse(_creatorInfoUrl),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data['error']['code'] != 'ok') {
+          throw TikTokApiException(
+            'خطأ في استعلام معلومات المنشئ: ${data['error']['message']}',
+            statusCode: response.statusCode,
+          );
+        }
+
+        return data;
+      } else {
+        throw TikTokApiException(
+          'فشل في استعلام معلومات المنشئ: ${response.body}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      if (e is TikTokApiException) rethrow;
+      throw TikTokApiException('خطأ في استعلام معلومات المنشئ: $e');
+    }
+  }
+
+  /// بدء تحميل فيديو
+  Future<Map<String, dynamic>> initVideoUpload({
+    required String accessToken,
+    required int fileSize,
+    required String caption,
+    required Map<String, dynamic> creatorInfo,
+  }) async {
+    try {
+      // الحصول على خيارات الخصوصية المتاحة من معلومات المنشئ
       List<dynamic> privacyOptions =
           creatorInfo['data']['privacy_level_options'] ?? ['SELF_ONLY'];
       String privacyLevel = privacyOptions.contains('PUBLIC_TO_EVERYONE')
           ? 'PUBLIC_TO_EVERYONE'
           : privacyOptions.first.toString();
 
-      // حساب حجم الأجزاء وعددها
+      // حساب حجم الأجزاء المثالي للتحميل
       int chunkSize = fileSize < 5 * 1024 * 1024
           ? fileSize
           : fileSize < 64 * 1024 * 1024
@@ -596,11 +382,8 @@ class TikTokService {
 
       int totalChunkCount = (fileSize / chunkSize).ceil();
 
-      print(
-          'إنشاء طلب التحميل - الحجم: $fileSize، حجم الجزء: $chunkSize، عدد الأجزاء: $totalChunkCount');
-
       final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/post/publish/video/init/'),
+        Uri.parse(_videoInitUrl),
         headers: {
           'Authorization': 'Bearer $accessToken',
           'Content-Type': 'application/json; charset=UTF-8',
@@ -622,24 +405,13 @@ class TikTokService {
         }),
       );
 
-      print('استجابة بدء التحميل: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
+        final data = json.decode(response.body);
 
-        if (data.containsKey('error') && data['error']['code'] != 'ok') {
+        if (data['error']['code'] != 'ok') {
           throw TikTokApiException(
             'خطأ في بدء تحميل الفيديو: ${data['error']['message']}',
             statusCode: response.statusCode,
-          );
-        }
-
-        if (!data.containsKey('data') ||
-            !data['data'].containsKey('publish_id') ||
-            !data['data'].containsKey('upload_url')) {
-          throw TikTokApiException(
-            'بيانات غير مكتملة في استجابة بدء التحميل: ${response.body}',
           );
         }
 
@@ -654,68 +426,21 @@ class TikTokService {
         );
       }
     } catch (e) {
-      print('خطأ في بدء تحميل الفيديو: $e');
       if (e is TikTokApiException) rethrow;
       throw TikTokApiException('خطأ في بدء تحميل الفيديو: $e');
     }
   }
 
-  /// استعلام معلومات المستخدم وخياراته المتاحة
-  /// استعلام معلومات المستخدم وخياراته المتاحة
-  Future<Map<String, dynamic>> queryCreatorInfo(String accessToken) async {
+  /// تحميل جزء من الفيديو
+  Future<void> uploadVideoChunk({
+    required String uploadUrl,
+    required List<int> chunkData,
+    required int startByte,
+    required int endByte,
+    required int totalFileSize,
+    required String mimeType,
+  }) async {
     try {
-      print('استعلام معلومات مستخدم تيك توك...');
-
-      final response = await _client.post(
-        Uri.parse(
-            '${AppConfig.tiktokApiBaseUrl}/post/publish/creator_info/query/'),
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-      );
-
-      print('استجابة استعلام معلومات المستخدم: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-
-        if (data.containsKey('error') && data['error']['code'] != 'ok') {
-          throw TikTokApiException(
-            'خطأ في استعلام معلومات المستخدم: ${data['error']['message']}',
-            statusCode: response.statusCode,
-          );
-        }
-
-        return data;
-      } else {
-        throw TikTokApiException(
-          'فشل في استعلام معلومات المستخدم: ${response.body}',
-          statusCode: response.statusCode,
-        );
-      }
-    } catch (e) {
-      print('خطأ في استعلام معلومات المستخدم: $e');
-      if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في استعلام معلومات المستخدم: $e');
-    }
-  }
-
-  // تحميل جزء من الفيديو
-  /// تحميل جزء من الفيديو إلى عنوان URL المحدد
-  Future<void> uploadVideoChunk(
-    String uploadUrl,
-    List<int> chunkData,
-    int startByte,
-    int endByte,
-    int totalFileSize,
-    String mimeType,
-  ) async {
-    try {
-      print(
-          'تحميل جزء الفيديو من $startByte إلى $endByte من إجمالي $totalFileSize...');
-
       final request = http.Request('PUT', Uri.parse(uploadUrl));
 
       // إضافة الترويسات المطلوبة
@@ -730,36 +455,25 @@ class TikTokService {
       final streamedResponse = await _client.send(request);
       final response = await http.Response.fromStream(streamedResponse);
 
-      print('استجابة تحميل الجزء: ${response.statusCode}');
-
       // التحقق من صحة الاستجابة - قبول 206 للتحميل الجزئي و201 للتحميل الكامل
       if (response.statusCode != 206 && response.statusCode != 201) {
-        print('استجابة خاطئة: ${response.body}');
         throw TikTokApiException(
           'فشل في تحميل جزء الفيديو. الرمز: ${response.statusCode}، الرسالة: ${response.body}',
           statusCode: response.statusCode,
         );
       }
-
-      // تحقق إضافي من محتوى الاستجابة إذا لزم الأمر
-      if (response.headers.containsKey('content-range')) {
-        print('نطاق المحتوى المؤكد: ${response.headers['content-range']}');
-      }
     } catch (e) {
-      print('خطأ في تحميل جزء الفيديو: $e');
       if (e is TikTokApiException) rethrow;
       throw TikTokApiException('خطأ في تحميل جزء الفيديو: $e');
     }
   }
 
-  /// التحقق من حالة طلب النشر
+  /// التحقق من حالة النشر
   Future<Map<String, dynamic>> checkPublishStatus(
       String accessToken, String publishId) async {
     try {
-      print('التحقق من حالة النشر للمعرف: $publishId');
-
       final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/post/publish/status/fetch/'),
+        Uri.parse(_publishStatusUrl),
         headers: {
           'Authorization': 'Bearer $accessToken',
           'Content-Type': 'application/json; charset=UTF-8',
@@ -769,13 +483,10 @@ class TikTokService {
         }),
       );
 
-      print('استجابة حالة النشر: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
+        final data = json.decode(response.body);
 
-        if (data.containsKey('error') && data['error']['code'] != 'ok') {
+        if (data['error']['code'] != 'ok') {
           throw TikTokApiException(
             'خطأ في استعلام حالة النشر: ${data['error']['message']}',
             statusCode: response.statusCode,
@@ -790,252 +501,12 @@ class TikTokService {
         );
       }
     } catch (e) {
-      print('خطأ في التحقق من حالة النشر: $e');
       if (e is TikTokApiException) rethrow;
       throw TikTokApiException('خطأ في التحقق من حالة النشر: $e');
     }
   }
 
-  /// طريقة تحميل مبسطة تستخدم واجهة API المحدثة
-  Future<String> simpleVideoUpload({
-    required String accessToken,
-    required File videoFile,
-    required String caption,
-    Function(String status, int progressPercent)? onProgress,
-  }) async {
-    try {
-      if (onProgress != null) {
-        onProgress('تحضير تحميل الفيديو...', 5);
-      }
-
-      // 1. استعلام معلومات المستخدم (مطلوب)
-      if (onProgress != null) {
-        onProgress('استعلام معلومات المستخدم...', 10);
-      }
-
-      final creatorInfoResponse = await queryCreatorInfo(accessToken);
-      print('معلومات المستخدم: $creatorInfoResponse');
-
-      // 2. تهيئة عملية النشر
-      if (onProgress != null) {
-        onProgress('تهيئة عملية النشر...', 20);
-      }
-
-      // استخراج خيارات الخصوصية من معلومات المستخدم
-      final List<dynamic> privacyOptions =
-          creatorInfoResponse['data']['privacy_level_options'] ?? ['SELF_ONLY'];
-      String privacyLevel = privacyOptions.first.toString();
-
-      // قراءة حجم الملف
-      final fileSize = await videoFile.length();
-
-      // تحديد حجم القطع
-      final int chunkSize = 10 * 1024 * 1024; // 10 ميجابايت
-      final int totalChunks = (fileSize / chunkSize).ceil();
-
-      // إرسال طلب التهيئة
-      final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/post/publish/video/init/'),
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-          'Content-Type': 'application/json; charset=UTF-8',
-        },
-        body: json.encode({
-          "post_info": {
-            "title": caption,
-            "privacy_level": privacyLevel,
-            "disable_duet": false,
-            "disable_comment": false,
-            "disable_stitch": false,
-          },
-          "source_info": {
-            "source": "FILE_UPLOAD",
-            "video_size": fileSize,
-            "chunk_size": chunkSize,
-            "total_chunk_count": totalChunks,
-          }
-        }),
-      );
-
-      print('استجابة بدء التحميل: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
-      // التحقق من الاستجابة
-      if (response.statusCode != 200) {
-        throw Exception('فشل في بدء عملية التحميل: ${response.body}');
-      }
-
-      // تحليل البيانات
-      final responseData = json.decode(response.body);
-
-      if (responseData['error']['code'] != 'ok') {
-        throw Exception(
-            'خطأ في بدء التحميل: ${responseData['error']['message']}');
-      }
-
-      final String publishId = responseData['data']['publish_id'];
-      final String uploadUrl = responseData['data']['upload_url'];
-
-      // 3. تحميل ملف الفيديو
-      if (onProgress != null) {
-        onProgress('جاري تحميل ملف الفيديو...', 30);
-      }
-
-      // قراءة محتوى الملف
-      final bytes = await videoFile.readAsBytes();
-
-      // تحديد نوع الوسائط
-      final mimeType = lookupMimeType(videoFile.path) ?? 'video/mp4';
-
-      // إعداد طلب PUT
-      final request = http.Request('PUT', Uri.parse(uploadUrl));
-      request.headers['Content-Type'] = mimeType;
-      request.headers['Content-Length'] = bytes.length.toString();
-      request.headers['Content-Range'] =
-          'bytes 0-${bytes.length - 1}/$fileSize';
-      request.bodyBytes = bytes;
-
-      final streamedResponse = await _client.send(request);
-      final uploadResponse = await http.Response.fromStream(streamedResponse);
-
-      print('استجابة تحميل الفيديو: ${uploadResponse.statusCode}');
-      print('محتوى الاستجابة: ${uploadResponse.body}');
-
-      if (uploadResponse.statusCode != 201 &&
-          uploadResponse.statusCode != 206) {
-        throw Exception('فشل في تحميل الفيديو: ${uploadResponse.body}');
-      }
-
-      // 4. التحقق من حالة النشر
-      if (onProgress != null) {
-        onProgress('التحقق من حالة النشر...', 80);
-      }
-
-      bool isComplete = false;
-      int attempts = 0;
-      const maxAttempts = 30;
-
-      while (!isComplete && attempts < maxAttempts) {
-        attempts++;
-
-        // انتظار بين المحاولات
-        await Future.delayed(Duration(seconds: 3));
-
-        final statusResponse = await _client.post(
-          Uri.parse('${AppConfig.tiktokApiBaseUrl}/post/publish/status/fetch/'),
-          headers: {
-            'Authorization': 'Bearer $accessToken',
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          body: json.encode({
-            'publish_id': publishId,
-          }),
-        );
-
-        print(
-            'استجابة حالة النشر (محاولة $attempts): ${statusResponse.statusCode}');
-        print('محتوى الاستجابة: ${statusResponse.body}');
-
-        if (statusResponse.statusCode == 200) {
-          final statusData = json.decode(statusResponse.body);
-
-          if (statusData['error']['code'] == 'ok' &&
-              statusData['data'] != null &&
-              statusData['data']['status'] != null) {
-            final status = statusData['data']['status'];
-
-            if (status == 'PUBLISH_OK' || status == 'SUCCESS') {
-              isComplete = true;
-              if (onProgress != null) {
-                onProgress('تم نشر الفيديو بنجاح!', 100);
-              }
-
-              // الحصول على معرف الفيديو إذا كان متاحاً
-              final videoId = statusData['data']['video_id'] ?? publishId;
-              return videoId;
-            } else if (status == 'FAILED' || status == 'ERROR') {
-              final errorMsg =
-                  statusData['data']['error_message'] ?? 'خطأ غير معروف';
-              throw Exception('فشل في نشر الفيديو: $errorMsg');
-            }
-
-            // تحديث حالة التقدم
-            if (onProgress != null) {
-              onProgress('معالجة الفيديو... (${attempts}/${maxAttempts})',
-                  80 + (attempts * 10 ~/ maxAttempts));
-            }
-          }
-        }
-      }
-
-      if (!isComplete) {
-        throw Exception(
-            'استغرق تأكيد النشر وقتاً طويلاً، يرجى التحقق من حساب تيك توك');
-      }
-
-      return publishId;
-    } catch (e) {
-      print('خطأ في تحميل الفيديو: $e');
-      if (onProgress != null) {
-        onProgress('خطأ: $e', 0);
-      }
-      throw Exception('فشل في تحميل الفيديو: $e');
-    }
-  }
-
-  // إكمال تحميل الفيديو ونشر المنشور
-  Future<String> completeVideoUpload(
-    String accessToken,
-    String uploadId,
-    String caption,
-  ) async {
-    try {
-      print('إنهاء تحميل فيديو تيك توك...');
-
-      final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/video/publish/'),
-        headers: {
-          'Authorization': 'Bearer $accessToken',
-          'Content-Type': 'application/json',
-        },
-        body: json.encode({
-          'upload_id': uploadId,
-          'video_info': {
-            'title': caption,
-            'privacy_level': 'PUBLIC_TO_EVERYONE',
-            'disable_duet': false,
-            'disable_comment': false,
-            'disable_stitch': false,
-          }
-        }),
-      );
-
-      print('استجابة إكمال التحميل: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
-
-      if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
-        if (!data.containsKey('data') ||
-            !data['data'].containsKey('video_id')) {
-          throw TikTokApiException(
-              'لم يتم العثور على معرف الفيديو في الاستجابة');
-        }
-        return data['data']['video_id'];
-      } else {
-        throw TikTokApiException(
-          'فشل في إكمال تحميل الفيديو: ${response.body}',
-          statusCode: response.statusCode,
-        );
-      }
-    } catch (e) {
-      print('خطأ في إكمال تحميل الفيديو: $e');
-      if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في الاتصال: $e');
-    }
-  }
-
-  // تحميل فيديو إلى تيك توك
-  /// تحميل فيديو إلى تيك توك باستخدام واجهة API المحدثة
+  /// تحميل فيديو كامل (عملية مبسطة)
   Future<String> uploadVideo({
     required String accessToken,
     required File videoFile,
@@ -1047,48 +518,49 @@ class TikTokService {
         onProgress('تحضير تحميل الفيديو...', 5);
       }
 
-      // التحقق من وجود الملف
+      // 1. التحقق من وجود الملف
       if (!await videoFile.exists()) {
         throw TikTokApiException('ملف الفيديو غير موجود');
       }
 
-      // الحصول على حجم الملف
-      final fileSize = await videoFile.length();
-      if (fileSize > 1024 * 1024 * 1024 * 4) {
-        // 4 جيجابايت حد أقصى
-        throw TikTokApiException(
-            'حجم الفيديو يتجاوز الحد المسموح به (4 جيجابايت)');
-      }
-
-      // الحصول على نوع الملف
-      final mimeType = lookupMimeType(videoFile.path) ?? 'video/mp4';
-      if (!mimeType.startsWith('video/')) {
-        throw TikTokApiException('نوع الملف غير مدعوم، يجب أن يكون فيديو');
-      }
-
-      // 1. استعلام معلومات المستخدم
+      // 2. استعلام معلومات المنشئ (مطلوب)
       if (onProgress != null) {
         onProgress('استعلام معلومات المستخدم...', 10);
       }
       final creatorInfoResponse = await queryCreatorInfo(accessToken);
 
-      // 2. بدء التحميل
+      // 3. الحصول على حجم الملف
+      final fileSize = await videoFile.length();
+      if (fileSize > 4 * 1024 * 1024 * 1024) {
+        // الحد 4 جيجابايت
+        throw TikTokApiException(
+            'حجم الفيديو يتجاوز الحد المسموح به (4 جيجابايت)');
+      }
+
+      // 4. بدء عملية التحميل
       if (onProgress != null) {
-        onProgress('بدء عملية التحميل...', 15);
+        onProgress('تهيئة عملية التحميل...', 20);
       }
       final initData = await initVideoUpload(
-          accessToken, fileSize, caption, creatorInfoResponse);
+        accessToken: accessToken,
+        fileSize: fileSize,
+        caption: caption,
+        creatorInfo: creatorInfoResponse,
+      );
 
       final String publishId = initData['publish_id'];
       final String uploadUrl = initData['upload_url'];
 
-      // 3. قراءة بايتات الملف
+      // 5. قراءة محتوى الملف
       if (onProgress != null) {
-        onProgress('قراءة ملف الفيديو...', 20);
+        onProgress('قراءة الفيديو...', 30);
       }
       final videoBytes = await videoFile.readAsBytes();
 
-      // 4. حساب حجم الأجزاء
+      // 6. تحديد نوع الوسائط
+      final mimeType = lookupMimeType(videoFile.path) ?? 'video/mp4';
+
+      // 7. حساب حجم الأجزاء
       int chunkSize = fileSize < 5 * 1024 * 1024
           ? fileSize.toInt()
           : fileSize < 64 * 1024 * 1024
@@ -1097,43 +569,60 @@ class TikTokService {
 
       final int totalChunks = (fileSize / chunkSize).ceil();
 
-      // 5. تحميل الأجزاء
-      for (int i = 0; i < totalChunks; i++) {
-        final int start = i * chunkSize;
-        final int end = (start + chunkSize > fileSize)
-            ? fileSize.toInt() - 1
-            : start + chunkSize - 1;
-        final List<int> chunk = videoBytes.sublist(start, end + 1);
-
+      // 8. تحميل الأجزاء
+      if (totalChunks == 1) {
+        // إذا كان الملف يمكن تحميله دفعة واحدة
         if (onProgress != null) {
-          final progressPercent = 20 + ((i + 1) * 70 ~/ totalChunks);
-          onProgress(
-              'تحميل جزء الفيديو ${i + 1}/$totalChunks...', progressPercent);
+          onProgress('تحميل الفيديو...', 40);
         }
 
         await uploadVideoChunk(
-          uploadUrl,
-          chunk,
-          start,
-          end,
-          fileSize,
-          mimeType,
+          uploadUrl: uploadUrl,
+          chunkData: videoBytes,
+          startByte: 0,
+          endByte: fileSize - 1,
+          totalFileSize: fileSize,
+          mimeType: mimeType,
         );
+      } else {
+        // إذا كان يجب تقسيم الملف إلى أجزاء
+        for (int i = 0; i < totalChunks; i++) {
+          final int start = i * chunkSize;
+          final int end = (start + chunkSize > fileSize)
+              ? fileSize - 1
+              : start + chunkSize - 1;
+          final List<int> chunk = videoBytes.sublist(start, end + 1);
 
-        // انتظار قصير بين الأجزاء
-        if (i < totalChunks - 1) {
-          await Future.delayed(Duration(milliseconds: 500));
+          if (onProgress != null) {
+            final progressPercent = 40 + ((i + 1) * 40 ~/ totalChunks);
+            onProgress(
+                'تحميل جزء الفيديو ${i + 1}/$totalChunks...', progressPercent);
+          }
+
+          await uploadVideoChunk(
+            uploadUrl: uploadUrl,
+            chunkData: chunk,
+            startByte: start,
+            endByte: end,
+            totalFileSize: fileSize,
+            mimeType: mimeType,
+          );
+
+          // انتظار قصير بين الأجزاء
+          if (i < totalChunks - 1) {
+            await Future.delayed(Duration(milliseconds: 500));
+          }
         }
       }
 
-      // 6. فحص حالة النشر حتى الاكتمال
+      // 9. فحص حالة النشر
       if (onProgress != null) {
         onProgress('التحقق من حالة النشر...', 90);
       }
 
       bool isComplete = false;
       int attempts = 0;
-      const maxAttempts = 20;
+      const maxAttempts = 30;
       String? videoId;
 
       while (!isComplete && attempts < maxAttempts) {
@@ -1143,10 +632,9 @@ class TikTokService {
 
         final statusResponse = await checkPublishStatus(accessToken, publishId);
 
-        if (statusResponse.containsKey('data') &&
-            statusResponse['data'].containsKey('status')) {
+        if (statusResponse['data'] != null &&
+            statusResponse['data']['status'] != null) {
           final status = statusResponse['data']['status'];
-          print('حالة النشر: $status (محاولة $attempts)');
 
           if (status == 'PUBLISH_OK' || status == 'SUCCESS') {
             isComplete = true;
@@ -1157,9 +645,8 @@ class TikTokService {
             }
           } else if (status == 'PROCESSING') {
             if (onProgress != null) {
-              onProgress(
-                  'جاري معالجة الفيديو... (محاولة $attempts/$maxAttempts)',
-                  90 + (attempts * 5 ~/ maxAttempts));
+              onProgress('جاري معالجة الفيديو... (${attempts}/${maxAttempts})',
+                  90 + (attempts * 10 ~/ maxAttempts));
             }
           } else if (status == 'FAILED' || status == 'ERROR') {
             throw TikTokApiException(
@@ -1171,17 +658,16 @@ class TikTokService {
 
       if (!isComplete) {
         throw TikTokApiException(
-            'استغرق تأكيد نشر الفيديو وقتًا طويلاً، ولكن قد يكون تم النشر بنجاح. يرجى التحقق من حساب تيك توك.');
+            'استغرق تأكيد نشر الفيديو وقتًا طويلاً. يرجى التحقق من حساب تيك توك.');
       }
 
       return videoId ?? publishId;
     } catch (e) {
-      print('خطأ في تحميل الفيديو إلى تيك توك: $e');
       if (onProgress != null) {
         onProgress('خطأ: $e', 0);
       }
       if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في تحميل الفيديو إلى تيك توك: $e');
+      throw TikTokApiException('خطأ في تحميل الفيديو: $e');
     }
   }
 }

@@ -2,10 +2,20 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+/// ويدجت لعرض رمز QR الخاص بتيك توك
+///
+/// يعرض رمز QR للمصادقة ويعكس حالته الحالية
 class TikTokQRCodeWidget extends StatelessWidget {
+  /// بيانات رمز QR (URL أو نص)
   final String qrData;
+
+  /// حالة رمز QR الحالية (new, scanned, confirmed, expired)
   final String status;
+
+  /// دالة يتم استدعاؤها عند الضغط على زر التحديث
   final VoidCallback onRefresh;
+
+  /// دالة يتم استدعاؤها عند الضغط على زر الإلغاء (اختيارية)
   final VoidCallback? onCancel;
 
   const TikTokQRCodeWidget({
@@ -65,7 +75,7 @@ class TikTokQRCodeWidget extends StatelessWidget {
                     icon: const Icon(Icons.refresh),
                     label: const Text('تحديث الرمز'),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.black,
+                      backgroundColor: Colors.black, // لون TikTok
                     ),
                   ),
               ],
@@ -76,142 +86,33 @@ class TikTokQRCodeWidget extends StatelessWidget {
     );
   }
 
+  /// بناء رمز QR بناءً على الحالة
   Widget _buildQRCode() {
-    // إذا كان يبدأ بـ aweme://، نحوله إلى بيانات معلومات
-    final qrContent = qrData.startsWith('aweme://')
-        ? 'افتح تطبيق تيك توك وانتقل إلى الإعدادات > المزيد > امسح الرمز'
-        : qrData;
-
     // عرض رمز QR بناءً على الحالة
     switch (status) {
       case 'new':
       case 'scanned':
-        // عرض رمز QR فقط إذا كان عنوان URL كاملًا
-        if (qrData.startsWith('aweme://')) {
-          return Container(
-            width: 240,
-            height: 240,
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: Colors.grey.shade300),
-            ),
-            child: QrImageView(
-              data: qrData,
-              version: QrVersions.auto,
-              size: 220,
-              backgroundColor: Colors.white,
-              padding: const EdgeInsets.all(4),
-              embeddedImage: const AssetImage('assets/images/tiktok_logo.png'),
-              embeddedImageStyle: const QrEmbeddedImageStyle(
-                size: Size(40, 40),
-              ),
-            ),
-          );
-        } else {
-          // إذا كانت البيانات ليست عنوان URL كاملًا، اعرض صورة QR
-          // من البيانات إذا كانت في تنسيق base64
-          if (qrData.contains('base64')) {
-            try {
-              final imageData =
-                  qrData.replaceAll(RegExp(r'data:image/\w+;base64,'), '');
-              return Container(
-                width: 240,
-                height: 240,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.grey.shade300),
-                ),
-                child: Image.memory(
-                  base64Decode(imageData),
-                  width: 220,
-                  height: 220,
-                ),
-              );
-            } catch (e) {
-              return const Center(
-                child: Text('خطأ في عرض رمز QR'),
-              );
-            }
-          } else {
-            // إذا لم يكن هناك بيانات صالحة، اعرض رسالة خطأ
-            return const Center(
-              child: Text('لا يوجد بيانات رمز QR صالحة'),
-            );
-          }
+        // إذا كانت البيانات URL كامل
+        if (qrData.startsWith('http')) {
+          return _buildQRImageView();
+        }
+        // إذا كانت البيانات تحتوي على base64 (صورة)
+        else if (qrData.contains('base64')) {
+          return _buildBase64Image();
+        }
+        // إذا كانت البيانات نصية بسيطة
+        else {
+          return _buildQRImageView();
         }
 
       case 'confirmed':
-        return Container(
-          width: 240,
-          height: 240,
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.green),
-          ),
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                Icon(
-                  Icons.check_circle,
-                  color: Colors.green,
-                  size: 80,
-                ),
-                SizedBox(height: 16),
-                Text(
-                  'تم المصادقة بنجاح!',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.green,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
+        return _buildConfirmedStatus();
 
       case 'expired':
-        return Container(
-          width: 240,
-          height: 240,
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.grey.shade300),
-          ),
-          child: Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                Icon(
-                  Icons.timer_off,
-                  color: Colors.red,
-                  size: 80,
-                ),
-                SizedBox(height: 16),
-                Text(
-                  'انتهت صلاحية الرمز',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.red,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
+        return _buildExpiredStatus();
 
       default:
-        // في أي حالة أخرى، اعرض رسالة جاري التحميل
+        // حالة التحميل الافتراضية
         return Container(
           width: 240,
           height: 240,
@@ -222,12 +123,158 @@ class TikTokQRCodeWidget extends StatelessWidget {
             border: Border.all(color: Colors.grey.shade300),
           ),
           child: const Center(
-            child: CircularProgressIndicator(),
+            child: CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+            ),
           ),
         );
     }
   }
 
+  /// بناء رمز QR باستخدام مكتبة QR Flutter
+  Widget _buildQRImageView() {
+    return Container(
+      width: 240,
+      height: 240,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: QrImageView(
+        data: qrData,
+        version: QrVersions.auto,
+        size: 220,
+        backgroundColor: Colors.white,
+        padding: const EdgeInsets.all(4),
+        embeddedImage: const AssetImage('assets/images/tiktok_logo.png'),
+        embeddedImageStyle: const QrEmbeddedImageStyle(
+          size: Size(40, 40),
+        ),
+      ),
+    );
+  }
+
+  /// بناء صورة من بيانات base64
+  Widget _buildBase64Image() {
+    try {
+      final imageData =
+          qrData.replaceAll(RegExp(r'data:image/\w+;base64,'), '');
+      return Container(
+        width: 240,
+        height: 240,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.grey.shade300),
+        ),
+        child: Image.memory(
+          base64Decode(imageData),
+          width: 220,
+          height: 220,
+        ),
+      );
+    } catch (e) {
+      return Container(
+        width: 240,
+        height: 240,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.red),
+        ),
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.error, color: Colors.red, size: 48),
+              SizedBox(height: 16),
+              Text(
+                'خطأ في عرض رمز QR',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.red),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+  }
+
+  /// عرض حالة التأكيد
+  Widget _buildConfirmedStatus() {
+    return Container(
+      width: 240,
+      height: 240,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.green),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(
+              Icons.check_circle,
+              color: Colors.green,
+              size: 80,
+            ),
+            SizedBox(height: 16),
+            Text(
+              'تم المصادقة بنجاح!',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.green,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// عرض حالة انتهاء الصلاحية
+  Widget _buildExpiredStatus() {
+    return Container(
+      width: 240,
+      height: 240,
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(
+              Icons.timer_off,
+              color: Colors.red,
+              size: 80,
+            ),
+            SizedBox(height: 16),
+            Text(
+              'انتهت صلاحية الرمز',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.red,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// بناء ويدجت عرض الحالة
   Widget _buildStatusWidget(BuildContext context) {
     Color color;
     IconData icon;
@@ -254,7 +301,7 @@ class TikTokQRCodeWidget extends StatelessWidget {
         icon = Icons.timer_off;
         message = 'انتهت صلاحية الرمز';
         break;
-      case 'utilised':
+      case 'used':
         color = Colors.grey;
         icon = Icons.done_all;
         message = 'تم استخدام الرمز بالفعل';

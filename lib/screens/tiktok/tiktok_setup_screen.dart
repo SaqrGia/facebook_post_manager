@@ -5,6 +5,9 @@ import '../../widgets/common/loading_indicator.dart';
 import '../../widgets/tiktok/tiktok_qr_code_widget.dart';
 import '../../models/tiktok_account.dart';
 
+/// شاشة إعداد TikTok
+///
+/// تستخدم للربط مع حسابات TikTok باستخدام مسح رمز QR
 class TikTokSetupScreen extends StatefulWidget {
   const TikTokSetupScreen({Key? key}) : super(key: key);
 
@@ -35,8 +38,7 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
 
   @override
   void dispose() {
-    // إيقاف استطلاع QR عند إغلاق الشاشة
-    context.read<TikTokProvider>().stopQRPolling();
+    // نظيف - يتم التعامل مع إيقاف الاستطلاع في dispose لـ TikTokProvider
     super.dispose();
   }
 
@@ -98,43 +100,98 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
                 ),
               )
             else
-              ...accounts
-                  .map((account) => _buildAccountTile(account, provider)),
+              ...accounts.map((account) => _buildAccountCard(account)),
           ],
         );
       },
     );
   }
 
-  // عنصر حساب واحد
-  Widget _buildAccountTile(TikTokAccount account, TikTokProvider provider) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        leading: account.avatarUrl != null
-            ? CircleAvatar(
-                backgroundImage: NetworkImage(account.avatarUrl!),
-                backgroundColor: Colors.black,
-              )
-            : const CircleAvatar(
-                backgroundColor: Colors.black,
-                child: Icon(Icons.person, color: Colors.white),
-              ),
-        title: Text('@${account.username}'),
-        subtitle: Text(
-          account.isTokenExpired
-              ? 'انتهت صلاحية الرمز - انقر للتحديث'
-              : 'حساب نشط',
-          style: TextStyle(
-            color: account.isTokenExpired ? Colors.red : Colors.green,
+  // بطاقة عرض حساب فردي
+  Widget _buildAccountCard(TikTokAccount account) {
+    return Consumer<TikTokProvider>(
+      builder: (context, provider, _) {
+        return Card(
+          margin: const EdgeInsets.only(bottom: 8),
+          child: ListTile(
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            leading: account.avatarUrl != null
+                ? CircleAvatar(
+                    backgroundImage: NetworkImage(account.avatarUrl!),
+                    backgroundColor: Colors.black,
+                  )
+                : CircleAvatar(
+                    backgroundColor: Colors.black,
+                    child: Text(
+                      account.username.isNotEmpty
+                          ? account.username[0].toUpperCase()
+                          : 'T',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+            title: Text('@${account.username}'),
+            subtitle: account.isTokenExpired
+                ? Row(
+                    children: const [
+                      Icon(Icons.error_outline, color: Colors.red, size: 16),
+                      SizedBox(width: 4),
+                      Text('انتهت صلاحية الرمز - انقر للتحديث',
+                          style: TextStyle(color: Colors.red)),
+                    ],
+                  )
+                : Row(
+                    children: const [
+                      Icon(Icons.check_circle, color: Colors.green, size: 16),
+                      SizedBox(width: 4),
+                      Text('حساب نشط', style: TextStyle(color: Colors.green)),
+                    ],
+                  ),
+            trailing: PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert),
+              onSelected: (value) async {
+                if (value == 'refresh') {
+                  // تحديث الحساب
+                  final success = await provider.refreshAccountInfo(account.id);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(success
+                            ? 'تم تحديث الحساب بنجاح'
+                            : 'فشل تحديث الحساب'),
+                        backgroundColor: success ? Colors.green : Colors.red,
+                      ),
+                    );
+                  }
+                } else if (value == 'remove') {
+                  // إزالة الحساب
+                  _confirmRemoveAccount(context, account, provider);
+                }
+              },
+              itemBuilder: (context) => [
+                const PopupMenuItem<String>(
+                  value: 'refresh',
+                  child: ListTile(
+                    leading: Icon(Icons.refresh),
+                    title: Text('تحديث الحساب'),
+                  ),
+                ),
+                const PopupMenuItem<String>(
+                  value: 'remove',
+                  child: ListTile(
+                    leading: Icon(Icons.delete, color: Colors.red),
+                    title: Text('إزالة الحساب',
+                        style: TextStyle(color: Colors.red)),
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-        trailing: IconButton(
-          icon: const Icon(Icons.delete, color: Colors.red),
-          onPressed: () => _confirmRemoveAccount(context, account, provider),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -163,16 +220,14 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
       ),
     );
 
-    if (confirmed == true) {
+    if (confirmed == true && mounted) {
       await provider.removeAccount(account.id);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('تم إزالة الحساب بنجاح'),
-            backgroundColor: Colors.green,
-          ),
-        );
-      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم إزالة الحساب بنجاح'),
+          backgroundColor: Colors.green,
+        ),
+      );
     }
   }
 
@@ -203,7 +258,7 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
                   ),
                   const SizedBox(height: 16),
                   ElevatedButton(
-                    onPressed: () => _initQRCode(),
+                    onPressed: _initQRCode,
                     child: const Text('إعادة المحاولة'),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.black,
@@ -220,9 +275,10 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
           return TikTokQRCodeWidget(
             qrData: provider.qrCodeUrl!,
             status: provider.qrStatus,
-            onRefresh: () => _initQRCode(),
+            onRefresh: _initQRCode,
             onCancel: () {
-              provider.stopQRPolling();
+              // توقف عن استطلاع الحالة
+              // لا نحتاج لاستدعاء stopQRPolling هنا - سيتم التعامل معه في الـ Provider
               setState(() {});
             },
           );
@@ -242,7 +298,7 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
               ),
               const SizedBox(height: 16),
               ElevatedButton.icon(
-                onPressed: () => _initQRCode(),
+                onPressed: _initQRCode,
                 icon: const Icon(Icons.qr_code),
                 label: const Text('طلب رمز QR'),
                 style: ElevatedButton.styleFrom(
@@ -276,38 +332,25 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
               ),
             ),
             SizedBox(height: 8),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                backgroundColor: Colors.black,
-                child: Text('1', style: TextStyle(color: Colors.white)),
-              ),
-              title: Text('افتح تطبيق تيك توك على هاتفك'),
+            _InstructionStep(
+              number: '1',
+              text: 'افتح تطبيق تيك توك على هاتفك',
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                backgroundColor: Colors.black,
-                child: Text('2', style: TextStyle(color: Colors.white)),
-              ),
-              title:
-                  Text('انتقل إلى صفحة الملف الشخصي > ثلاث نقاط > مسح الرمز'),
+            _InstructionStep(
+              number: '2',
+              text: 'انتقل إلى صفحة الملف الشخصي',
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                backgroundColor: Colors.black,
-                child: Text('3', style: TextStyle(color: Colors.white)),
-              ),
-              title: Text('امسح رمز QR الظاهر هنا'),
+            _InstructionStep(
+              number: '3',
+              text: 'اضغط على ثلاث نقاط ↑ ثم اختر "مسح الرمز"',
             ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                backgroundColor: Colors.black,
-                child: Text('4', style: TextStyle(color: Colors.white)),
-              ),
-              title: Text('اتبع التعليمات على الشاشة للموافقة على الصلاحيات'),
+            _InstructionStep(
+              number: '4',
+              text: 'امسح رمز QR الظاهر هنا',
+            ),
+            _InstructionStep(
+              number: '5',
+              text: 'اتبع التعليمات على الشاشة للموافقة على الصلاحيات',
             ),
             SizedBox(height: 8),
             Text(
@@ -320,6 +363,45 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// ويدجت خطوة التعليمات
+class _InstructionStep extends StatelessWidget {
+  final String number;
+  final String text;
+
+  const _InstructionStep({
+    Key? key,
+    required this.number,
+    required this.text,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 12,
+            backgroundColor: Colors.black,
+            child: Text(
+              number,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(text),
+          ),
+        ],
       ),
     );
   }

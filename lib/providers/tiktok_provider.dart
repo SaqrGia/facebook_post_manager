@@ -1,19 +1,25 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../models/tiktok_account.dart';
 import '../services/tiktok_service.dart';
 import '../services/storage_service.dart';
 import '../config/app_config.dart';
-import 'package:path/path.dart' as path;
-import 'package:path_provider/path_provider.dart';
 
+/// مزود حالة TikTok
+///
+/// يدير هذا المزود حالة المصادقة وحسابات TikTok في التطبيق
+/// يوفر واجهة سهلة للتفاعل مع TikTok API
 class TikTokProvider with ChangeNotifier {
   final TikTokService _tikTokService;
   final StorageService _storageService;
 
+  // حالة الحسابات
   List<TikTokAccount> _accounts = [];
   Set<String> _selectedAccountIds = {};
+
+  // حالة المصادقة
   bool _isLoading = false;
   bool _isUploading = false;
   bool _isPollingQR = false;
@@ -24,8 +30,10 @@ class TikTokProvider with ChangeNotifier {
   // بيانات QR Code
   String? _qrCodeUrl;
   String? _qrToken;
-  String? _clientTicket;
   String _qrStatus = '';
+
+  // مؤقت استطلاع QR
+  Timer? _qrPollingTimer;
 
   TikTokProvider({
     TikTokService? tikTokService,
@@ -50,7 +58,13 @@ class TikTokProvider with ChangeNotifier {
   String? get qrCodeUrl => _qrCodeUrl;
   String get qrStatus => _qrStatus;
 
-  // تحميل الحسابات المحفوظة
+  @override
+  void dispose() {
+    _stopQRPolling();
+    super.dispose();
+  }
+
+  /// تحميل الحسابات المحفوظة
   Future<void> loadAccounts() async {
     try {
       final accountsData = await _storageService.getTikTokAccounts();
@@ -60,54 +74,28 @@ class TikTokProvider with ChangeNotifier {
       }
     } catch (e) {
       print('خطأ في تحميل حسابات تيك توك المحفوظة: $e');
-      _error = e.toString();
+      _error = 'فشل في تحميل الحسابات: $e';
+      notifyListeners();
     }
   }
 
-  // حفظ الحسابات
+  /// حفظ الحسابات في التخزين المحلي
   Future<void> _saveAccounts() async {
     try {
       await _storageService.saveTikTokAccounts(_accounts);
     } catch (e) {
       print('خطأ في حفظ حسابات تيك توك: $e');
-      _error = e.toString();
-    }
-  }
-
-  // بدء عملية المصادقة التقليدية (للتوافقية)
-  Future<void> startAuth() async {
-    _isLoading = true;
-    _error = null;
-    notifyListeners();
-
-    try {
-      final authUrl = _tikTokService.getAuthorizationUrl();
-
-      final canLaunch = await canLaunchUrl(authUrl);
-      if (!canLaunch) {
-        throw Exception('لا يمكن فتح عنوان URL للمصادقة');
-      }
-
-      await launchUrl(
-        authUrl,
-        mode: LaunchMode.externalApplication,
-      );
-    } catch (e) {
-      _error = 'فشل في بدء المصادقة: $e';
-      print(_error);
-    } finally {
-      _isLoading = false;
+      _error = 'فشل في حفظ الحسابات: $e';
       notifyListeners();
     }
   }
 
-  // طلب رمز QR للمصادقة
+  /// طلب رمز QR للمصادقة
   Future<bool> requestQRCode() async {
     _isLoading = true;
     _error = null;
     _qrCodeUrl = null;
     _qrToken = null;
-    _clientTicket = null;
     _qrStatus = 'جاري التحميل...';
     notifyListeners();
 
@@ -116,23 +104,23 @@ class TikTokProvider with ChangeNotifier {
 
       _qrCodeUrl = qrData['qr_url'];
       _qrToken = qrData['token'];
-      _clientTicket = qrData['client_ticket'];
       _qrStatus = 'new';
 
+      _isLoading = false;
+      notifyListeners();
       return true;
     } catch (e) {
       _error = 'فشل في طلب رمز QR: $e';
       print(_error);
-      return false;
-    } finally {
       _isLoading = false;
       notifyListeners();
+      return false;
     }
   }
 
-  // بدء استطلاع حالة QR
-  Future<void> startQRPolling() async {
-    if (_qrToken == null || _clientTicket == null) {
+  /// بدء استطلاع حالة QR
+  void startQRPolling() {
+    if (_qrToken == null) {
       _error = 'لم يتم طلب رمز QR بعد';
       notifyListeners();
       return;
@@ -146,103 +134,78 @@ class TikTokProvider with ChangeNotifier {
     _error = null;
     notifyListeners();
 
-    try {
-      // استطلاع كل 2 ثانية
-      const pollInterval = Duration(seconds: 2);
-      bool shouldContinue = true;
-      String? authCode;
-      int attempts = 0;
-      const maxAttempts = 30; // الحد الأقصى للمحاولات (60 ثانية)
+    // استطلاع كل 2 ثانية
+    const pollInterval = Duration(seconds: 2);
+    int attempts = 0;
+    const maxAttempts = 30; // الحد الأقصى للمحاولات (60 ثانية)
 
-      while (shouldContinue && _isPollingQR && attempts < maxAttempts) {
-        attempts++;
+    _qrPollingTimer = Timer.periodic(pollInterval, (timer) async {
+      attempts++;
 
-        try {
-          final statusData = await _tikTokService.checkQRCodeStatus(
-            _qrToken!,
-            _clientTicket!,
-          );
+      if (attempts >= maxAttempts || !_isPollingQR) {
+        _stopQRPolling();
 
-          // تحديث الحالة
-          _qrStatus = statusData['status'] ?? 'unknown';
+        if (attempts >= maxAttempts) {
+          _error = 'انتهت مهلة انتظار مسح رمز QR';
+          _qrStatus = 'expired';
           notifyListeners();
-
-          print('حالة QR: $_qrStatus');
-
-          // التحقق من حالة QR
-          if (_qrStatus == 'confirmed') {
-            // استخراج رمز التفويض من استجابة مختلفة
-            if (statusData.containsKey('code')) {
-              authCode = statusData['code'];
-              shouldContinue = false;
-            } else if (statusData.containsKey('redirect_uri')) {
-              authCode =
-                  _tikTokService.extractAuthCode(statusData['redirect_uri']);
-              shouldContinue = false;
-            }
-          } else if (_qrStatus == 'expired') {
-            shouldContinue = false;
-            _error = 'انتهت صلاحية رمز QR، يرجى طلب رمز جديد';
-          } else if (_qrStatus == 'utilised') {
-            shouldContinue = false;
-            _error = 'تم استخدام رمز QR بالفعل، يرجى طلب رمز جديد';
-          }
-
-          // إذا وصلنا إلى حالة نهائية، نتوقف عن الاستطلاع
-          if (!shouldContinue) {
-            break;
-          }
-
-          // انتظار قبل الاستطلاع التالي
-          await Future.delayed(pollInterval);
-        } catch (e) {
-          print('خطأ في استطلاع حالة QR: $e');
-
-          // تقليل عدد محاولات التكرار للخطأ نفسه
-          if (attempts % 3 == 0) {
-            _error =
-                'حدث خطأ في استطلاع حالة QR، سيتم إعادة المحاولة... ($attempts/$maxAttempts)';
-            notifyListeners();
-          }
-
-          // الاستمرار في الاستطلاع حتى في حالة الخطأ
-          await Future.delayed(pollInterval);
         }
-      }
-
-      // إذا تجاوزنا الحد الأقصى للمحاولات
-      if (attempts >= maxAttempts && shouldContinue) {
-        _error = 'استغرق تأكيد QR وقتًا طويلاً جدًا. يرجى المحاولة مرة أخرى.';
-        _qrStatus = 'expired';
-        notifyListeners();
         return;
       }
 
-      // إذا حصلنا على رمز تفويض، نستبدله برمز وصول
-      if (authCode != null) {
-        print('تم الحصول على رمز تفويض، جاري استبداله برمز وصول...');
+      try {
+        final statusData = await _tikTokService.checkQRCodeStatus(_qrToken!);
 
-        try {
-          await _processAuthCode(authCode);
-        } catch (e) {
-          print('خطأ في معالجة رمز التفويض: $e');
-          _error = 'فشل في معالجة رمز التفويض: $e';
+        // تحديث الحالة
+        _qrStatus = statusData['status'] ?? 'unknown';
+        notifyListeners();
+
+        print('حالة QR: $_qrStatus (المحاولة ${attempts})');
+
+        // التحقق من حالة QR
+        if (_qrStatus == 'confirmed') {
+          _stopQRPolling();
+
+          // استخراج رمز التفويض
+          final authCode = statusData['code'];
+          if (authCode != null) {
+            print('تم الحصول على رمز تفويض من QR، جاري معالجته...');
+            await _processAuthCode(authCode);
+          } else {
+            _error = 'لم يتم العثور على رمز التفويض في استجابة QR المؤكدة';
+            notifyListeners();
+          }
+        } else if (_qrStatus == 'expired') {
+          _stopQRPolling();
+          _error = 'انتهت صلاحية رمز QR، يرجى طلب رمز جديد';
+          notifyListeners();
+        } else if (_qrStatus == 'used') {
+          _stopQRPolling();
+          _error = 'تم استخدام رمز QR بالفعل، يرجى طلب رمز جديد';
+          notifyListeners();
+        }
+      } catch (e) {
+        print('خطأ في استطلاع حالة QR: $e');
+
+        // لا نوقف الاستطلاع للخطأ المؤقت
+        if (attempts % 3 == 0) {
+          // نعرض الخطأ كل 3 محاولات فقط
+          _error = 'خطأ في استطلاع حالة QR: $e';
           notifyListeners();
         }
       }
-    } finally {
-      _isPollingQR = false;
-      notifyListeners();
-    }
+    });
   }
 
-  // إيقاف استطلاع حالة QR
-  void stopQRPolling() {
+  /// إيقاف استطلاع حالة QR
+  void _stopQRPolling() {
+    _qrPollingTimer?.cancel();
+    _qrPollingTimer = null;
     _isPollingQR = false;
     notifyListeners();
   }
 
-  // معالجة رمز المصادقة
+  /// معالجة رمز المصادقة الذي تم الحصول عليه من المصادقة
   Future<bool> processAuthCode(String code) async {
     _isLoading = true;
     _error = null;
@@ -253,14 +216,72 @@ class TikTokProvider with ChangeNotifier {
     } catch (e) {
       _error = 'فشل المصادقة: $e';
       print(_error);
-      return false;
-    } finally {
       _isLoading = false;
       notifyListeners();
+      return false;
     }
   }
 
-  /// إعادة تحميل معلومات الحساب المرتبط
+  /// المنطق الداخلي لمعالجة رمز المصادقة
+  Future<bool> _processAuthCode(String code) async {
+    try {
+      print('معالجة رمز التفويض: $code');
+
+      // استبدال الرمز برمز الوصول
+      final tokenData = await _tikTokService.exchangeCodeForToken(code);
+
+      // استخراج معلومات الرمز
+      final accessToken = tokenData['access_token'];
+      final refreshToken = tokenData['refresh_token'] ?? '';
+      final openId = tokenData['open_id'];
+      final expiresIn = tokenData['expires_in'] as int;
+
+      if (accessToken == null || openId == null) {
+        throw Exception('بيانات الرمز غير مكتملة');
+      }
+
+      // حساب تاريخ انتهاء الصلاحية
+      final tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
+
+      // الحصول على معلومات المستخدم
+      final userInfo = await _tikTokService.getUserInfo(accessToken);
+
+      // إنشاء حساب تيك توك
+      final account = TikTokAccount(
+        id: openId,
+        username: userInfo['display_name'] ?? 'مستخدم تيك توك',
+        avatarUrl: userInfo['avatar_url'],
+        accessToken: accessToken,
+        tokenExpiry: tokenExpiry,
+        refreshToken: refreshToken,
+      );
+
+      // التحقق مما إذا كان الحساب موجودًا بالفعل
+      final existingIndex = _accounts.indexWhere((a) => a.id == account.id);
+      if (existingIndex >= 0) {
+        // تحديث الحساب الموجود
+        _accounts[existingIndex] = account;
+      } else {
+        // إضافة حساب جديد
+        _accounts.add(account);
+      }
+
+      // حفظ الحسابات
+      await _saveAccounts();
+
+      _isLoading = false;
+      _qrStatus = 'success';
+      notifyListeners();
+      return true;
+    } catch (e) {
+      _isLoading = false;
+      _error = 'فشل في معالجة رمز التفويض: $e';
+      notifyListeners();
+      throw e;
+    }
+  }
+
+  /// تحديث معلومات الحساب المرتبط
   Future<bool> refreshAccountInfo(String accountId) async {
     try {
       _isLoading = true;
@@ -272,181 +293,74 @@ class TikTokProvider with ChangeNotifier {
           _accounts.indexWhere((account) => account.id == accountId);
       if (accountIndex < 0) {
         _error = 'الحساب غير موجود';
+        _isLoading = false;
         notifyListeners();
         return false;
       }
 
       final account = _accounts[accountIndex];
 
+      // تجديد الرمز إذا لزم الأمر
+      String accessToken = account.accessToken;
+      if (account.isTokenExpired) {
+        try {
+          final tokenData =
+              await _tikTokService.refreshAccessToken(account.refreshToken);
+          accessToken = tokenData['access_token'];
+
+          // تحديث الحساب بالرمز الجديد
+          final updatedAccount = account.copyWith(
+            accessToken: accessToken,
+            refreshToken: tokenData['refresh_token'] ?? account.refreshToken,
+            tokenExpiry: DateTime.now().add(
+              Duration(seconds: tokenData['expires_in'] as int),
+            ),
+          );
+
+          _accounts[accountIndex] = updatedAccount;
+          await _saveAccounts();
+        } catch (e) {
+          print('فشل في تجديد الرمز: $e');
+          _error = 'فشل في تجديد الرمز: $e';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+      }
+
       // الحصول على معلومات المستخدم
       try {
-        final userInfo = await _tikTokService.getUserInfo(account.accessToken);
+        final userInfo = await _tikTokService.getUserInfo(accessToken);
 
-        // تحديث بيانات الحساب
-        String username = 'مستخدم تيك توك';
-        String? avatarUrl;
-
-        if (userInfo.containsKey('data')) {
-          username = userInfo['data']['creator_nickname'] ??
-              userInfo['data']['creator_username'] ??
-              userInfo['data']['display_name'] ??
-              userInfo['data']['nickname'] ??
-              'مستخدم تيك توك';
-
-          avatarUrl = userInfo['data']['creator_avatar_url'] ??
-              userInfo['data']['avatar_url'] ??
-              userInfo['data']['avatar'];
-        }
-
-        // تحديث الحساب بالبيانات الجديدة
-        final updatedAccount = account.copyWith(
-          username: username,
-          avatarUrl: avatarUrl,
+        // تحديث الحساب بالمعلومات الجديدة
+        final updatedAccount = _accounts[accountIndex].copyWith(
+          username:
+              userInfo['display_name'] ?? _accounts[accountIndex].username,
+          avatarUrl:
+              userInfo['avatar_url'] ?? _accounts[accountIndex].avatarUrl,
         );
 
         _accounts[accountIndex] = updatedAccount;
         await _saveAccounts();
 
-        return true;
-      } catch (e) {
-        print('فشل في تحديث معلومات الحساب: $e');
-        return false;
-      } finally {
         _isLoading = false;
         notifyListeners();
+        return true;
+      } catch (e) {
+        _error = 'فشل في تحديث معلومات الحساب: $e';
+        _isLoading = false;
+        notifyListeners();
+        return false;
       }
     } catch (e) {
+      _error = 'حدث خطأ: $e';
       _isLoading = false;
-      _error = e.toString();
       notifyListeners();
       return false;
     }
   }
 
-  // المنطق الداخلي لمعالجة رمز المصادقة
-  Future<bool> _processAuthCode(String code) async {
-    try {
-      print('معالجة رمز التفويض: $code');
-
-      // تنظيف رمز التفويض - إذا كان يحتوي على أحرف خاصة
-      final cleanedCode = code.contains('*') ? code.split('*')[0] : code;
-      print('رمز التفويض بعد التنظيف: $cleanedCode');
-
-      // استبدال الرمز برمز الوصول
-      Map<String, dynamic> tokenData;
-      try {
-        tokenData = await _tikTokService.exchangeCodeForToken(code);
-        print('تم الحصول على بيانات الرمز: $tokenData');
-      } catch (e) {
-        print('فشل في استبدال الرمز، محاولة التنظيف وإعادة المحاولة: $e');
-        // محاولة ثانية بعد تنظيف الرمز
-        tokenData = await _tikTokService.exchangeCodeForToken(cleanedCode);
-      }
-
-      // استخراج معلومات الرمز - معالجة هياكل الاستجابة المختلفة
-      String? accessToken = tokenData['access_token'];
-      String? refreshToken = tokenData['refresh_token'];
-      int expiresIn = 0;
-
-      if (accessToken == null && tokenData.containsKey('data')) {
-        final data = tokenData['data'];
-        accessToken = data['access_token'];
-        refreshToken = data['refresh_token'];
-        expiresIn = data['expires_in'] ?? 86400;
-      } else {
-        expiresIn = tokenData['expires_in'] ?? 86400;
-      }
-
-      if (accessToken == null) {
-        throw Exception(
-            'لم يتم العثور على رمز الوصول في الاستجابة بعد المعالجة: $tokenData');
-      }
-
-      // تعيين قيمة افتراضية لـ refreshToken إذا كان null
-      refreshToken ??= '';
-
-      // حساب تاريخ انتهاء الصلاحية
-      final tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
-
-      try {
-        // الحصول على معلومات المستخدم
-        final userData = await _tikTokService.getUserInfo(accessToken);
-        print('تم الحصول على بيانات المستخدم: $userData');
-
-        // معالجة هياكل بيانات API المختلفة
-        Map<String, dynamic> userInfo;
-        if (userData.containsKey('data')) {
-          userInfo = userData['data'];
-        } else {
-          userInfo = userData;
-        }
-
-        // إنشاء حساب تيك توك
-        final account = TikTokAccount(
-          id: userInfo['open_id'] ??
-              userInfo['user_id'] ??
-              userInfo['union_id'] ??
-              DateTime.now().millisecondsSinceEpoch.toString(),
-          username: userInfo['display_name'] ??
-              userInfo['nickname'] ??
-              'مستخدم تيك توك',
-          avatarUrl: userInfo['avatar_url'] ?? userInfo['avatar'],
-          accessToken: accessToken,
-          tokenExpiry: tokenExpiry,
-          refreshToken: refreshToken,
-        );
-
-        // التحقق مما إذا كان الحساب موجودًا بالفعل
-        final existingIndex = _accounts.indexWhere((a) => a.id == account.id);
-        if (existingIndex >= 0) {
-          // تحديث الحساب الموجود
-          _accounts[existingIndex] = account;
-        } else {
-          // إضافة حساب جديد
-          _accounts.add(account);
-        }
-
-        // حفظ الحسابات
-        await _saveAccounts();
-
-        // إعادة تعيين حالة الواجهة
-        _qrStatus = 'success';
-        _error = null;
-        notifyListeners();
-
-        return true;
-      } catch (e) {
-        print('خطأ في الحصول على بيانات المستخدم: $e');
-
-        // محاولة إنشاء حساب بدون بيانات المستخدم (الحد الأدنى)
-        final account = TikTokAccount(
-          id: 'tiktok_${DateTime.now().millisecondsSinceEpoch}',
-          username: 'مستخدم تيك توك جديد',
-          avatarUrl: null,
-          accessToken: accessToken,
-          tokenExpiry: tokenExpiry,
-          refreshToken: refreshToken ?? '',
-        );
-
-        _accounts.add(account);
-        await _saveAccounts();
-
-        // نجحنا في إضافة الحساب رغم عدم الحصول على بياناته
-        _qrStatus = 'success_partial';
-        _error = 'تم الربط بنجاح ولكن لم نتمكن من جلب كامل معلومات الحساب';
-        notifyListeners();
-
-        return true;
-      }
-    } catch (e) {
-      print('خطأ في معالجة رمز التفويض: $e');
-      _error = 'فشل في ربط الحساب: $e';
-      notifyListeners();
-      throw e;
-    }
-  }
-
-  // تبديل اختيار الحساب
+  /// تبديل اختيار الحساب
   void toggleAccountSelection(String accountId) {
     if (_selectedAccountIds.contains(accountId)) {
       _selectedAccountIds.remove(accountId);
@@ -456,59 +370,17 @@ class TikTokProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // التحقق مما إذا كان الحساب مختارًا
+  /// التحقق مما إذا كان الحساب مختارًا
   bool isAccountSelected(String accountId) =>
       _selectedAccountIds.contains(accountId);
 
-  // مسح الاختيار
+  /// مسح الاختيار
   void clearSelection() {
     _selectedAccountIds.clear();
     notifyListeners();
   }
 
-  // تجديد الرمز إذا لزم الأمر
-  Future<String> _getValidAccessToken(TikTokAccount account) async {
-    // إذا لم تنتهي صلاحية الرمز، أرجعه
-    if (!account.isTokenExpired) {
-      return account.accessToken;
-    }
-
-    // وإلا، قم بتجديد الرمز
-    try {
-      final tokenData =
-          await _tikTokService.refreshAccessToken(account.refreshToken);
-
-      // استخراج معلومات الرمز
-      final accessToken = tokenData['access_token'];
-      final refreshToken = tokenData['refresh_token'] ?? account.refreshToken;
-      final expiresIn = tokenData['expires_in'] as int;
-
-      // حساب تاريخ انتهاء الصلاحية
-      final tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
-
-      // تحديث الحساب
-      final updatedAccount = account.copyWith(
-        accessToken: accessToken,
-        refreshToken: refreshToken,
-        tokenExpiry: tokenExpiry,
-      );
-
-      // تحديث الحساب في القائمة
-      final index = _accounts.indexWhere((a) => a.id == account.id);
-      if (index >= 0) {
-        _accounts[index] = updatedAccount;
-        // حفظ الحسابات
-        await _saveAccounts();
-      }
-
-      return accessToken;
-    } catch (e) {
-      print('خطأ في تجديد الرمز: $e');
-      throw Exception('فشل في تجديد الرمز: $e');
-    }
-  }
-
-  // تحميل فيديو إلى تيك توك
+  /// تحميل فيديو إلى تيك توك
   Future<bool> uploadVideoToTikTok({
     required File videoFile,
     required String caption,
@@ -542,32 +414,45 @@ class TikTokProvider with ChangeNotifier {
 
       for (final account in selectedAccounts) {
         try {
-          // 1. تحديث معلومات الحساب أولاً
-          _uploadStatus = 'جاري تحديث معلومات الحساب...';
-          _uploadProgress = 5;
-          notifyListeners();
-
-          await refreshAccountInfo(account.id);
-
-          // 2. استخدام طريقة بديلة لتحميل الفيديو
-          // بدلاً من استخدام الطريقة التي تفشل، سنستخدم PULL_FROM_URL
-
+          // استخدام طريقة تحميل الفيديو المبسطة
           _uploadStatus = 'جاري تحميل الفيديو إلى ${account.username}...';
-          _uploadProgress = 20;
+          _uploadProgress = 10;
           notifyListeners();
 
-          // إنشاء موقع مؤقت للملف
-          final tempDir = await getTemporaryDirectory();
-          final targetPath = path.join(tempDir.path,
-              'video_${DateTime.now().millisecondsSinceEpoch}.mp4');
+          // تجديد الرمز إذا لزم الأمر
+          String accessToken = account.accessToken;
+          if (account.isTokenExpired) {
+            try {
+              final tokenData =
+                  await _tikTokService.refreshAccessToken(account.refreshToken);
+              accessToken = tokenData['access_token'];
 
-          // نسخ الفيديو إلى موقع مؤقت (في حال كان الملف الأصلي في مكان غير قابل للوصول)
-          await videoFile.copy(targetPath);
+              // تحديث الحساب بالرمز الجديد
+              final updatedAccount = account.copyWith(
+                accessToken: accessToken,
+                refreshToken:
+                    tokenData['refresh_token'] ?? account.refreshToken,
+                tokenExpiry: DateTime.now().add(
+                  Duration(seconds: tokenData['expires_in'] as int),
+                ),
+              );
 
-          // تحميل الفيديو باستخدام الملف المؤقت
-          final uploadResult = await _tikTokService.simpleVideoUpload(
-            accessToken: account.accessToken,
-            videoFile: File(targetPath),
+              // تحديث الحساب في القائمة
+              final index = _accounts.indexWhere((a) => a.id == account.id);
+              if (index >= 0) {
+                _accounts[index] = updatedAccount;
+                await _saveAccounts();
+              }
+            } catch (e) {
+              print('فشل في تجديد الرمز: $e');
+              continue; // تخطي هذا الحساب والانتقال إلى الحساب التالي
+            }
+          }
+
+          // تحميل الفيديو
+          final videoId = await _tikTokService.uploadVideo(
+            accessToken: accessToken,
+            videoFile: videoFile,
             caption: caption,
             onProgress: (status, progress) {
               _uploadStatus = status;
@@ -576,12 +461,9 @@ class TikTokProvider with ChangeNotifier {
             },
           );
 
-          print('نتيجة تحميل الفيديو: $uploadResult');
+          print(
+              'تم تحميل الفيديو بنجاح إلى حساب ${account.username}، معرف الفيديو: $videoId');
           anySuccess = true;
-
-          _uploadStatus = 'تم تحميل الفيديو بنجاح!';
-          _uploadProgress = 100;
-          notifyListeners();
         } catch (e) {
           print('فشل في التحميل إلى الحساب ${account.username}: $e');
           // نستمر بالمحاولة مع الحسابات الأخرى
@@ -592,22 +474,25 @@ class TikTokProvider with ChangeNotifier {
         throw Exception('فشل في تحميل الفيديو إلى أي حساب مختار');
       }
 
-      return anySuccess;
-    } catch (e) {
-      _error = e.toString();
-      print('خطأ في uploadVideoToTikTok: $e');
-      return false;
-    } finally {
-      // تأخير إخفاء مؤشر التحميل لمدة 3 ثوانٍ إذا كان ناجحاً (لإظهار رسالة النجاح)
-      if (_uploadProgress == 100) {
-        await Future.delayed(Duration(seconds: 3));
-      }
+      _uploadStatus = 'تم تحميل الفيديو بنجاح!';
+      _uploadProgress = 100;
+      notifyListeners();
+
+      // تأخير إخفاء مؤشر التحميل
+      await Future.delayed(Duration(seconds: 3));
       _isUploading = false;
       notifyListeners();
+
+      return true;
+    } catch (e) {
+      _error = e.toString();
+      _isUploading = false;
+      notifyListeners();
+      return false;
     }
   }
 
-  // إزالة حساب
+  /// إزالة حساب
   Future<void> removeAccount(String accountId) async {
     _accounts.removeWhere((account) => account.id == accountId);
     _selectedAccountIds.remove(accountId);
@@ -615,7 +500,7 @@ class TikTokProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // مسح الخطأ
+  /// مسح الخطأ
   void clearError() {
     _error = null;
     notifyListeners();

@@ -3,6 +3,9 @@ import 'package:provider/provider.dart';
 import '../../models/tiktok_account.dart';
 import '../../providers/tiktok_provider.dart';
 
+/// قائمة اختيار حسابات تيك توك
+///
+/// تسمح للمستخدم باختيار حسابات تيك توك لنشر المحتوى
 class TikTokAccountSelectionList extends StatelessWidget {
   const TikTokAccountSelectionList({Key? key}) : super(key: key);
 
@@ -11,6 +14,17 @@ class TikTokAccountSelectionList extends StatelessWidget {
     return Consumer<TikTokProvider>(
       builder: (context, provider, _) {
         final accounts = provider.accounts;
+
+        if (provider.isLoading) {
+          return const Center(
+            child: Padding(
+              padding: EdgeInsets.all(16),
+              child: CircularProgressIndicator(
+                valueColor: AlwaysStoppedAnimation<Color>(Colors.black),
+              ),
+            ),
+          );
+        }
 
         if (accounts.isEmpty) {
           return Padding(
@@ -26,7 +40,7 @@ class TikTokAccountSelectionList extends StatelessWidget {
                   onPressed: () {
                     Navigator.pushNamed(context, '/tiktok_setup');
                   },
-                  icon: const Icon(Icons.qr_code),
+                  icon: const Icon(Icons.add),
                   label: const Text('ربط حساب تيك توك'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.black, // لون تيك توك
@@ -48,16 +62,26 @@ class TikTokAccountSelectionList extends StatelessWidget {
                 return _TikTokAccountSelectionTile(account: account);
               },
             ),
+            // إظهار خطأ إذا وجد
+            if (provider.error != null)
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text(
+                  provider.error!,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ),
+            // زر إضافة حساب جديد
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: ElevatedButton.icon(
+              child: OutlinedButton.icon(
                 onPressed: () {
                   Navigator.pushNamed(context, '/tiktok_setup');
                 },
                 icon: const Icon(Icons.add),
                 label: const Text('ربط حساب تيك توك جديد'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.black, // لون تيك توك
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.black,
                 ),
               ),
             ),
@@ -68,6 +92,7 @@ class TikTokAccountSelectionList extends StatelessWidget {
   }
 }
 
+/// بطاقة عرض حساب تيك توك فردي
 class _TikTokAccountSelectionTile extends StatelessWidget {
   final TikTokAccount account;
 
@@ -82,78 +107,146 @@ class _TikTokAccountSelectionTile extends StatelessWidget {
       builder: (context, provider, _) {
         final isSelected = provider.isAccountSelected(account.id);
 
-        return Column(
-          children: [
-            CheckboxListTile(
-              value: isSelected,
-              onChanged: (_) => provider.toggleAccountSelection(account.id),
-              title: Text('@${account.username}'),
-              subtitle: account.isTokenExpired
-                  ? const Text('انتهت صلاحية الرمز - انقر للتحديث',
-                      style: TextStyle(color: Colors.red))
-                  : const Text('حساب تيك توك'),
-              secondary: account.avatarUrl != null
-                  ? CircleAvatar(
-                      backgroundImage: NetworkImage(account.avatarUrl!),
-                      backgroundColor: Colors.black,
-                    )
-                  : const CircleAvatar(
-                      backgroundColor: Colors.black, // لون تيك توك
-                      child: Icon(Icons.music_note, color: Colors.white),
-                    ),
-              // تمييز حسابات تيك توك بلون مختلف
-              tileColor: Colors.black.withOpacity(0.05),
-              activeColor: Colors.black,
+        return Card(
+          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          elevation: 1,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(8),
+            side: BorderSide(
+              color: isSelected ? Colors.black : Colors.grey.withOpacity(0.3),
+              width: isSelected ? 2 : 1,
             ),
-            // أزرار التحديث وإعادة الربط
-            Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  // زر تحديث معلومات الحساب
-                  IconButton(
-                    icon:
-                        const Icon(Icons.refresh, color: Colors.blue, size: 20),
-                    tooltip: 'تحديث معلومات الحساب',
-                    onPressed: () async {
-                      final result =
-                          await provider.refreshAccountInfo(account.id);
-                      if (result && context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('تم تحديث معلومات الحساب بنجاح'),
-                            backgroundColor: Colors.green,
+          ),
+          child: Column(
+            children: [
+              // صف الاختيار الرئيسي
+              CheckboxListTile(
+                value: isSelected,
+                onChanged: (_) => provider.toggleAccountSelection(account.id),
+                title: Text('@${account.username}'),
+                subtitle: account.isTokenExpired
+                    ? Row(
+                        children: const [
+                          Icon(Icons.error_outline,
+                              color: Colors.red, size: 16),
+                          SizedBox(width: 4),
+                          Text('انتهت صلاحية الرمز - يلزم التحديث',
+                              style: TextStyle(color: Colors.red)),
+                        ],
+                      )
+                    : Row(
+                        children: const [
+                          Icon(Icons.check_circle,
+                              color: Colors.green, size: 16),
+                          SizedBox(width: 4),
+                          Text('حساب نشط',
+                              style: TextStyle(color: Colors.green)),
+                        ],
+                      ),
+                secondary: account.avatarUrl != null
+                    ? CircleAvatar(
+                        backgroundImage: NetworkImage(account.avatarUrl!),
+                        backgroundColor: Colors.black,
+                      )
+                    : CircleAvatar(
+                        backgroundColor: Colors.black,
+                        child: Text(
+                          account.username.isNotEmpty
+                              ? account.username[0].toUpperCase()
+                              : 'T',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
                           ),
-                        );
-                      }
-                    },
-                  ),
-                  // زر إعادة ربط الحساب
-                  TextButton.icon(
-                    onPressed: () {
-                      // حذف الحساب
-                      provider.removeAccount(account.id);
-                      // التوجه إلى شاشة QR
-                      Navigator.pushNamed(context, '/tiktok_setup');
-                    },
-                    icon: const Icon(Icons.link, size: 18),
-                    label: const Text('إعادة ربط الحساب',
-                        style: TextStyle(fontSize: 12)),
-                    style: TextButton.styleFrom(
-                      backgroundColor: Colors.grey.withOpacity(0.1),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 0),
-                    ),
-                  ),
-                ],
+                        ),
+                      ),
+                // تمييز حسابات تيك توك بلون خلفية
+                tileColor: isSelected ? Colors.black.withOpacity(0.05) : null,
+                activeColor: Colors.black,
+                checkColor: Colors.white,
+                dense: false,
+                controlAffinity: ListTileControlAffinity.trailing,
               ),
-            ),
-            const Divider(),
-          ],
+              // أزرار الإجراءات
+              Padding(
+                padding: const EdgeInsets.only(
+                    left: 16, right: 16, bottom: 8, top: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    // زر تحديث الحساب
+                    IconButton(
+                      icon: const Icon(Icons.refresh,
+                          size: 20, color: Colors.blue),
+                      tooltip: 'تحديث الحساب',
+                      onPressed: () async {
+                        final success =
+                            await provider.refreshAccountInfo(account.id);
+                        if (success && context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('تم تحديث معلومات الحساب بنجاح'),
+                              backgroundColor: Colors.green,
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    // زر إزالة الحساب
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline,
+                          size: 20, color: Colors.red),
+                      tooltip: 'إزالة الحساب',
+                      onPressed: () => _confirmAccountRemoval(
+                        context,
+                        provider,
+                        account,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
+  }
+
+  /// تأكيد إزالة الحساب
+  Future<void> _confirmAccountRemoval(
+    BuildContext context,
+    TikTokProvider provider,
+    TikTokAccount account,
+  ) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('إزالة الحساب'),
+        content:
+            Text('هل أنت متأكد من رغبتك في إزالة حساب @${account.username}؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('إلغاء'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('إزالة'),
+          ),
+        ],
+      ),
+    );
+
+    if (result == true && context.mounted) {
+      await provider.removeAccount(account.id);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم إزالة الحساب بنجاح'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
   }
 }
