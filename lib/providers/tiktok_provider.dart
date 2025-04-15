@@ -166,13 +166,14 @@ class TikTokProvider with ChangeNotifier {
         if (_qrStatus == 'confirmed') {
           _stopQRPolling();
 
-          // استخراج رمز التفويض
+          // استخراج رمز التفويض - مع التحقق من وجوده
           final authCode = statusData['code'];
           if (authCode != null) {
             print('تم الحصول على رمز تفويض من QR، جاري معالجته...');
             await _processAuthCode(authCode);
           } else {
-            _error = 'لم يتم العثور على رمز التفويض في استجابة QR المؤكدة';
+            _error =
+                'تم تأكيد المسح ولكن لم يتم تلقي رمز التفويض، يرجى المحاولة مرة أخرى';
             notifyListeners();
           }
         } else if (_qrStatus == 'expired') {

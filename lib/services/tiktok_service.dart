@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import '../config/app_config.dart';
+import 'dart:math';
 
 /// استثناء مخصص لأخطاء TikTok API
 class TikTokApiException implements Exception {
@@ -65,72 +66,49 @@ class TikTokService {
   /// يعود بعنوان URL لرمز QR وtoken للتحقق من حالة المسح
   Future<Map<String, dynamic>> getQRCode() async {
     try {
-      print('طلب رمز QR من TikTok...');
-
       final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/oauth/get_qrcode/'),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        Uri.parse('https://open.tiktokapis.com/v2/oauth/get_qrcode/'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'client_key': AppConfig.tiktokClientKey,
           'scope': AppConfig.tiktokPermissions.join(','),
-          'state': 'myappstate123',
+          'state': 'tiktok_qr_${DateTime.now().millisecondsSinceEpoch}',
         },
       );
 
-      print('استجابة طلب QR: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
+      print('استجابة QR: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
+        final data = json.decode(response.body);
 
-        // Verificar estructura de error
-        if (data.containsKey('error') &&
-            data['error'] is Map &&
-            data['error'].containsKey('code') &&
-            data['error']['code'] != 'ok') {
-          throw TikTokApiException(
-            'خطأ في طلب رمز QR: ${data['error']['message'] ?? "Error desconocido"}',
-            statusCode: response.statusCode,
-          );
+        // التعامل مع الهيكل المباشر بدون data و error
+        if (data != null &&
+            data.containsKey('scan_qrcode_url') &&
+            data.containsKey('token')) {
+          // توليد معرّف فريد للعميل
+          final random = Random();
+          final clientTicket =
+              'client_ticket_${DateTime.now().millisecondsSinceEpoch}_${random.nextInt(1000)}';
+
+          // استبدال client_ticket في عنوان URL
+          String qrUrl = data['scan_qrcode_url'] as String;
+          if (qrUrl.contains('client_ticket=tobefilled')) {
+            qrUrl = qrUrl.replaceFirst(
+                'client_ticket=tobefilled', 'client_ticket=$clientTicket');
+          }
+
+          return {
+            'qr_url': qrUrl,
+            'token': data['token'],
+            'client_ticket': clientTicket
+          };
         }
 
-        // Verificar si data['data'] existe
-        if (!data.containsKey('data') || data['data'] == null) {
-          throw TikTokApiException('بيانات رمز QR غير مكتملة في الاستجابة');
-        }
+        // محاولة التعامل مع الهياكل الأخرى المحتملة
+        // ...
 
-        // Extraer datos del objeto data['data']
-        final dataObject = data['data'];
-
-        if (!dataObject.containsKey('scan_qrcode_url') ||
-            !dataObject.containsKey('token')) {
-          throw TikTokApiException('بيانات رمز QR غير مكتملة في الاستجابة');
-        }
-
-        // Generar client_ticket
-        final clientTicket = 'fixed_client_ticket';
-        String qrUrl = dataObject['scan_qrcode_url'];
-
-        // Reemplazar client_ticket en la URL
-        if (qrUrl.contains('client_ticket=tobefilled')) {
-          qrUrl = qrUrl.replaceAll(
-              'client_ticket=tobefilled', 'client_ticket=$clientTicket');
-        } else if (qrUrl.contains('client_ticket=')) {
-          final regex = RegExp(r'client_ticket=([^&]*)');
-          qrUrl = qrUrl.replaceAllMapped(
-              regex, (match) => 'client_ticket=$clientTicket');
-        } else {
-          final separator = qrUrl.contains('?') ? '&' : '?';
-          qrUrl = '$qrUrl${separator}client_ticket=$clientTicket';
-        }
-
-        return {
-          'qr_url': qrUrl,
-          'token': dataObject['token'],
-          'client_ticket': clientTicket,
-        };
+        throw TikTokApiException(
+            'البيانات المستلمة غير متوافقة مع الهيكل المتوقع. البيانات: $data');
       } else {
         throw TikTokApiException(
           'فشل في طلب رمز QR: ${response.body}',
@@ -138,9 +116,8 @@ class TikTokService {
         );
       }
     } catch (e) {
-      print('خطأ في طلب رمز QR: $e');
       if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في الاتصال: $e');
+      throw TikTokApiException('خطأ في طلب رمز QR: $e');
     }
   }
 
@@ -149,13 +126,9 @@ class TikTokService {
   /// يستخدم للتحقق مما إذا تم مسح الرمز وتأكيده
   Future<Map<String, dynamic>> checkQRCodeStatus(String token) async {
     try {
-      print('التحقق من حالة رمز QR...');
-
       final response = await _client.post(
-        Uri.parse('${AppConfig.tiktokApiBaseUrl}/oauth/check_qrcode/'),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
+        Uri.parse('https://open.tiktokapis.com/v2/oauth/check_qrcode/'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: {
           'client_key': AppConfig.tiktokClientKey,
           'client_secret': AppConfig.tiktokClientSecret,
@@ -163,34 +136,51 @@ class TikTokService {
         },
       );
 
-      print('استجابة التحقق من حالة QR: ${response.statusCode}');
-      print('محتوى الاستجابة: ${response.body}');
+      print('استجابة فحص QR: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
-        final Map<String, dynamic> data = json.decode(response.body);
+        final data = json.decode(response.body);
 
-        // Verificar estructura de error correcta
-        if (data.containsKey('error') &&
-            data['error'] is Map &&
-            data['error'].containsKey('code') &&
-            data['error']['code'] != 'ok') {
-          throw TikTokApiException(
-            'خطأ في التحقق من حالة QR: ${data['error']['message'] ?? "Error desconocido"}',
-            statusCode: response.statusCode,
-          );
-        }
-
-        // Verificar si data['data'] existe y no es null
-        if (!data.containsKey('data') || data['data'] == null) {
-          return {'status': 'unknown', 'code': null};
-        }
-
-        // Retornar los datos de manera segura
-        return {
-          'status': data['data']['status'] ?? 'unknown',
-          'code': data['data']
-              ['code'] // Puede ser null si no está en estado "confirmed"
+        // تعريف القيم الافتراضية
+        Map<String, dynamic> result = {
+          'status': 'unknown',
+          'code': null,
         };
+
+        // الهيكل المباشر (بدون data و error)
+        if (data != null && data.containsKey('status')) {
+          result['status'] = data['status'];
+          if (data.containsKey('code')) {
+            result['code'] = data['code'];
+          } else if (data.containsKey('redirect_uri')) {
+            // استخراج الرمز من redirect_uri إذا كان موجودًا
+            final Uri uri = Uri.parse(data['redirect_uri']);
+            result['code'] = uri.queryParameters['code'];
+          }
+          return result;
+        }
+
+        // الهيكل القديم (مع data و error)
+        if (data.containsKey('error') && data.containsKey('data')) {
+          final error = data['error'];
+          if (error != null && error['code'] != 'ok') {
+            throw TikTokApiException(
+              'خطأ في التحقق من حالة QR: ${error['message'] ?? "خطأ غير معروف"}',
+            );
+          }
+
+          final responseData = data['data'];
+          if (responseData != null) {
+            result['status'] = responseData['status'] ?? 'unknown';
+            if (responseData.containsKey('code')) {
+              result['code'] = responseData['code'];
+            }
+          }
+          return result;
+        }
+
+        // في حالة عدم وجود بيانات معروفة
+        return result;
       } else {
         throw TikTokApiException(
           'فشل في التحقق من حالة QR: ${response.body}',
@@ -198,9 +188,8 @@ class TikTokService {
         );
       }
     } catch (e) {
-      print('خطأ في التحقق من حالة QR: $e');
       if (e is TikTokApiException) rethrow;
-      throw TikTokApiException('خطأ في الاتصال: $e');
+      throw TikTokApiException('خطأ في التحقق من حالة QR: $e');
     }
   }
 
@@ -209,6 +198,21 @@ class TikTokService {
   /// يستخدم رمز المصادقة (الذي تم الحصول عليه من عملية المصادقة) للحصول على رمز الوصول
   Future<Map<String, dynamic>> exchangeCodeForToken(String authCode) async {
     try {
+      print('معالجة رمز التفويض: $authCode');
+
+      // تنظيف رمز التفويض - إزالة كل شيء بعد علامة *
+      String cleanedCode = authCode;
+      if (authCode.contains('*')) {
+        // استخدام indexOf و substring بدلاً من split للتحكم بشكل أفضل
+        int starIndex = authCode.indexOf('*');
+        if (starIndex > 0) {
+          cleanedCode = authCode.substring(0, starIndex);
+          print(
+              'تم تنظيف الرمز لإزالة المحتوى بعد "*". الرمز المنظف: $cleanedCode');
+        }
+      }
+
+      // استبدال الرمز برمز الوصول
       final response = await _client.post(
         Uri.parse(_tokenUrl),
         headers: {
@@ -218,23 +222,44 @@ class TikTokService {
         body: {
           'client_key': AppConfig.tiktokClientKey,
           'client_secret': AppConfig.tiktokClientSecret,
-          'code': authCode,
+          'code': cleanedCode,
           'grant_type': 'authorization_code',
           'redirect_uri': AppConfig.tiktokRedirectUri,
         },
       );
 
+      print('استجابة استبدال الرمز: ${response.statusCode} - ${response.body}');
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
-        if (data['error']['code'] != 'ok') {
-          throw TikTokApiException(
-            'خطأ في استبدال الرمز: ${data['error']['message']}',
-            statusCode: response.statusCode,
-          );
+        // التعامل مع هيكل البيانات المستلمة
+        if (data != null) {
+          print('مفاتيح البيانات المستلمة: ${data.keys.toList()}');
+
+          // إذا كان هناك خطأ صريح في الاستجابة
+          if (data.containsKey('error')) {
+            final error = data['error'];
+            if (error is Map && error['code'] != 'ok') {
+              throw TikTokApiException(
+                'خطأ في استبدال الرمز: ${error['message'] ?? "خطأ غير معروف"}',
+              );
+            }
+          }
+
+          // التحقق من وجود data في الاستجابة
+          if (data.containsKey('data') && data['data'] != null) {
+            return data['data'];
+          }
+
+          // إذا كانت البيانات متاحة مباشرة
+          if (data.containsKey('access_token')) {
+            return data;
+          }
         }
 
-        return data['data'];
+        throw TikTokApiException(
+            'البيانات المستلمة لا تحتوي على رمز الوصول: $data');
       } else {
         throw TikTokApiException(
           'فشل في استبدال رمز المصادقة: ${response.body}',
@@ -242,6 +267,7 @@ class TikTokService {
         );
       }
     } catch (e) {
+      print('خطأ في استبدال رمز المصادقة: $e');
       if (e is TikTokApiException) rethrow;
       throw TikTokApiException('خطأ في استبدال رمز المصادقة: $e');
     }
