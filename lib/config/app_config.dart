@@ -18,7 +18,7 @@ class AppConfig {
 
   // عنوان إعادة التوجيه - تأكد من تسجيله بالضبط هكذا في لوحة تحكم TikTok
   static const String tiktokRedirectUri =
-      'https://saqrgia.github.io/tiktok-auth-callback/';
+      'https://saqrgia.github.io/tiktok-auth-callback';
 
   // عناوين تستخدم في مختلف مراحل المصادقة
   static const String tiktokAuthUrl =
