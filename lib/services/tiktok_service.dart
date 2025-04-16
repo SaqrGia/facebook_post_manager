@@ -230,25 +230,25 @@ class TikTokService {
     try {
       print('معالجة رمز التفويض: $authCode');
 
-      // Limpiar el código eliminando todo después del caracter "*"
-      String cleanedCode = authCode;
-      // if (authCode.contains('*')) {
-      //   int starIndex = authCode.indexOf('*');
-      //   cleanedCode = authCode.substring(0, starIndex);
-      //   print('الرمز بعد التنظيف: $cleanedCode');
-      // }
-
-      // Asegurar que redirect_uri termina con "/"
+      // تأكد من أن عنوان إعادة التوجيه ينتهي بشرطة مائلة
       String redirectUri = AppConfig.tiktokRedirectUri;
       if (!redirectUri.endsWith('/')) {
         redirectUri = redirectUri + '/';
       }
 
-      // Construir el cuerpo de la solicitud sin codificar el código de autorización
+      // تنظيف الرمز من أي محتوى بعد علامة *
+      String cleanedCode = authCode;
+      if (authCode.contains('*')) {
+        int starIndex = authCode.indexOf('*');
+        cleanedCode = authCode.substring(0, starIndex);
+        print('الرمز بعد التنظيف: $cleanedCode');
+      }
+
+      // بناء السلسلة النصية يدويًا مع ترميز جميع القيم ما عدا الرمز
       final body =
           'client_key=${Uri.encodeComponent(AppConfig.tiktokClientKey)}'
           '&client_secret=${Uri.encodeComponent(AppConfig.tiktokClientSecret)}'
-          '&code=$cleanedCode' // NO codificar el código de autorización
+          '&code=$cleanedCode' // استخدام الرمز بدون ترميز إضافي
           '&grant_type=authorization_code'
           '&redirect_uri=${Uri.encodeComponent(redirectUri)}';
 
@@ -269,7 +269,7 @@ class TikTokService {
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
-        // Verificar si hay errores en la respuesta
+        // التحقق من وجود أخطاء في الاستجابة
         if (data.containsKey('error')) {
           print(
               'خطأ في تبادل الرمز: ${data['error_description'] ?? data['error']}');
@@ -278,7 +278,7 @@ class TikTokService {
           );
         }
 
-        // Procesar diferentes formatos de respuesta
+        // معالجة أنماط الاستجابة المختلفة
         if (data.containsKey('access_token')) {
           return data;
         } else if (data.containsKey('data') && data['data'] != null) {
