@@ -206,6 +206,97 @@ class TikTokProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  Future<bool> authenticateWithManualToken({
+    required String accessToken,
+    required String refreshToken,
+    required int expiresIn,
+    String? openId,
+  }) async {
+    try {
+      _isLoading = true;
+      _error = null;
+      notifyListeners();
+
+      // إذا لم يتم توفير معرف المستخدم، نحاول الحصول عليه من API
+      String userId = openId ?? '';
+      if (openId == null) {
+        try {
+          // الحصول على معلومات المستخدم باستخدام الرمز المقدم
+          final userInfo = await _tikTokService.getUserInfo(accessToken);
+          userId = userInfo['open_id'] ?? '';
+
+          if (userId.isEmpty) {
+            throw TikTokApiException(
+                'لم نتمكن من الحصول على معرف المستخدم من واجهة برمجة التطبيقات');
+          }
+        } catch (e) {
+          _error = 'خطأ في التحقق من الرمز: $e';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+      }
+
+      // حساب تاريخ انتهاء الصلاحية
+      final tokenExpiry = DateTime.now().add(Duration(seconds: expiresIn));
+
+      // إنشاء حساب بالبيانات المقدمة
+      final account = TikTokAccount(
+        id: userId,
+        username: 'مستخدم TikTok', // سيتم تحديثه لاحقًا
+        accessToken: accessToken,
+        tokenExpiry: tokenExpiry,
+        refreshToken: refreshToken,
+      );
+
+      // محاولة الحصول على مزيد من معلومات المستخدم
+      try {
+        final userInfo = await _tikTokService.getUserInfo(accessToken);
+
+        // تحديث الحساب بمعلومات حقيقية
+        final updatedAccount = account.copyWith(
+          username: userInfo['display_name'] ?? 'مستخدم TikTok',
+          avatarUrl: userInfo['avatar_url'],
+        );
+
+        // التحقق مما إذا كان هناك حساب موجود بالفعل بهذا المعرف
+        final existingIndex = _accounts.indexWhere((a) => a.id == userId);
+        if (existingIndex >= 0) {
+          _accounts[existingIndex] = updatedAccount;
+        } else {
+          _accounts.add(updatedAccount);
+        }
+
+        // حفظ الحساب في التخزين
+        await _saveAccounts();
+
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      } catch (e) {
+        // إذا فشل الحصول على تفاصيل إضافية، لا يزال بإمكاننا حفظ الحساب الأساسي
+        final existingIndex = _accounts.indexWhere((a) => a.id == userId);
+        if (existingIndex >= 0) {
+          _accounts[existingIndex] = account;
+        } else {
+          _accounts.add(account);
+        }
+
+        await _saveAccounts();
+
+        _error = 'تم حفظ الحساب ولكن بمعلومات محدودة: $e';
+        _isLoading = false;
+        notifyListeners();
+        return true;
+      }
+    } catch (e) {
+      _error = 'خطأ في تسجيل الرمز: $e';
+      _isLoading = false;
+      notifyListeners();
+      return false;
+    }
+  }
+
   /// معالجة رمز المصادقة الذي تم الحصول عليه من المصادقة
   Future<bool> processAuthCode(String code) async {
     _isLoading = true;

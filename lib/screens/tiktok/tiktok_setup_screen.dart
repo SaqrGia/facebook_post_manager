@@ -4,6 +4,7 @@ import '../../providers/tiktok_provider.dart';
 import '../../widgets/common/loading_indicator.dart';
 import '../../widgets/tiktok/tiktok_qr_code_widget.dart';
 import '../../models/tiktok_account.dart';
+import 'tiktok_manual_setup_screen.dart';
 
 /// شاشة إعداد TikTok
 ///
@@ -42,6 +43,56 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
     super.dispose();
   }
 
+  // دالة جديدة لعرض خيار الربط اليدوي بشكل دائم
+  Widget _buildManualSetup() {
+    return Card(
+      elevation: 3,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'ربط الحساب يدويًا',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'إذا كان لديك رمز الوصول، يمكنك إدخاله مباشرة دون الحاجة لمسح رمز QR',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const TikTokManualSetupScreen(),
+                    ),
+                  ).then((result) {
+                    if (result == true) {
+                      // إذا نجح الربط اليدوي، نعود إلى الشاشة السابقة
+                      Navigator.pop(context);
+                    }
+                  });
+                },
+                icon: const Icon(Icons.edit),
+                label: const Text('إدخال رمز الوصول يدويًا'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[800],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -53,6 +104,12 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // إضافة قسم الربط اليدوي في بداية الشاشة
+            _buildManualSetup(),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 16),
+
             // عرض الحسابات المرتبطة حاليًا
             _buildLinkedAccounts(),
             const SizedBox(height: 24),
@@ -303,6 +360,27 @@ class _TikTokSetupScreenState extends State<TikTokSetupScreen> {
                 label: const Text('طلب رمز QR'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.black,
+                ),
+              ),
+              const SizedBox(height: 12), // مسافة بين الزرين
+              ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const TikTokManualSetupScreen(),
+                    ),
+                  ).then((result) {
+                    if (result == true) {
+                      // إذا نجح الربط اليدوي، نعود إلى الشاشة السابقة
+                      Navigator.pop(context);
+                    }
+                  });
+                },
+                icon: const Icon(Icons.edit),
+                label: const Text('إدخال رمز الوصول يدويًا'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[800],
                 ),
               ),
             ],

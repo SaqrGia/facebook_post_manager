@@ -5,6 +5,7 @@ import 'package:http_parser/http_parser.dart';
 import 'package:mime/mime.dart';
 import '../config/app_config.dart';
 import 'dart:math';
+import 'package:dio/dio.dart';
 
 /// استثناء مخصص لأخطاء TikTok API
 class TikTokApiException implements Exception {
@@ -223,62 +224,95 @@ class TikTokService {
     }
   }
 
-  /// استبدال رمز المصادقة برمز الوصول
-  ///
+  Future<void> testTokenExchange() async {
+    try {
+      // استخدام نفس الرمز الذي نجح في Postman
+      const code =
+          's3wTb3_U1BFiecTKaEy4jGU2XoJ9hls_BAycf2rzAx2ubmSEpCsCQFQLreQoNNvpKhShJeagMlyjR2OiNxcOBGOEQStMNkDNW77kqfp0Eb1v6cLsh50AvufAxHyTQuufxxo6lvHHzWPdBHGuUfvozlBsaX3r_ks5DdshrO6o7baDBwZyzRo_6ci8WxcC9wZKqHzCvXTc7mYU78kiq3rXzg*3!6823.va';
+
+      // محاكاة طلب curl مباشرة
+      final uri = Uri.parse('https://open.tiktokapis.com/v2/oauth/token/');
+
+      // إنشاء طلب بنفس الطريقة تمامًا
+      final request = http.Request('POST', uri);
+      request.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+
+      final params = {
+        'client_key': 'sbawd7xakgmyt8g669',
+        'client_secret': 'MypxLqu31goKj7W7YSvnjVaYNDd6wxxI',
+        'code': code,
+        'grant_type': 'authorization_code',
+        'redirect_uri': 'https://saqrgia.github.io/tiktok-auth-callback'
+      };
+
+      String body = params.entries
+          .map((e) =>
+              '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+          .join('&');
+
+      request.body = body;
+
+      final response =
+          await http.Client().send(request).then(http.Response.fromStream);
+
+      print(
+          'استجابة اختبار تبادل الرمز: ${response.statusCode} - ${response.body}');
+    } catch (e) {
+      print('خطأ في اختبار تبادل الرمز: $e');
+    }
+  }
+
   /// يستخدم رمز المصادقة (الذي تم الحصول عليه من عملية المصادقة) للحصول على رمز الوصول
   Future<Map<String, dynamic>> exchangeCodeForToken(String authCode) async {
     try {
       print('معالجة رمز التفويض: $authCode');
 
-      // تأكد من أن عنوان إعادة التوجيه ينتهي بشرطة مائلة
+      // استخدام الرمز كاملاً بدون تنظيف
+      // إزالة الشرطة المائلة في نهاية عنوان إعادة التوجيه
       String redirectUri = AppConfig.tiktokRedirectUri;
-      if (!redirectUri.endsWith('/')) {
-        redirectUri = redirectUri + '/';
+      if (redirectUri.endsWith('/')) {
+        redirectUri = redirectUri.substring(0, redirectUri.length - 1);
       }
 
-      // تنظيف الرمز من أي محتوى بعد علامة *
-      String cleanedCode = authCode;
-      if (authCode.contains('*')) {
-        int starIndex = authCode.indexOf('*');
-        cleanedCode = authCode.substring(0, starIndex);
-        print('الرمز بعد التنظيف: $cleanedCode');
-      }
+      // استخدام FormData لضمان الترميز الصحيح
+      final uri = Uri.parse(_tokenUrl);
+      final request = http.Request('POST', uri);
+      request.headers['Content-Type'] = 'application/x-www-form-urlencoded';
 
-      // بناء السلسلة النصية يدويًا مع ترميز جميع القيم ما عدا الرمز
-      final body =
-          'client_key=${Uri.encodeComponent(AppConfig.tiktokClientKey)}'
-          '&client_secret=${Uri.encodeComponent(AppConfig.tiktokClientSecret)}'
-          '&code=$cleanedCode' // استخدام الرمز بدون ترميز إضافي
-          '&grant_type=authorization_code'
-          '&redirect_uri=${Uri.encodeComponent(redirectUri)}';
+      // تعريف جسم الطلب باستخدام طريقة موثوقة للترميز
+      // مع الحفاظ على الرمز كاملاً كما هو
+      final Map<String, String> params = {
+        'client_key': AppConfig.tiktokClientKey,
+        'client_secret': AppConfig.tiktokClientSecret,
+        'code': authCode, // إرسال الرمز كاملاً
+        'grant_type': 'authorization_code',
+        'redirect_uri': redirectUri,
+      };
 
-      print('إرسال طلب تبادل الرمز مع الجسم: $body');
+      // تحويل المعلمات إلى سلسلة مع ترميز يدوي لضمان التوافق مع طلب Postman
+      String body = params.entries
+          .map((e) =>
+              '${Uri.encodeQueryComponent(e.key)}=${Uri.encodeQueryComponent(e.value)}')
+          .join('&');
 
-      final response = await _client.post(
-        Uri.parse(_tokenUrl),
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-        body: body,
-      );
+      request.body = body;
+      print('طلب تبادل الرمز النهائي: ${request.body}');
+
+      final response =
+          await _client.send(request).then(http.Response.fromStream);
 
       print('استجابة تبادل الرمز: ${response.statusCode} - ${response.body}');
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
-        // التحقق من وجود أخطاء في الاستجابة
         if (data.containsKey('error')) {
-          print(
-              'خطأ في تبادل الرمز: ${data['error_description'] ?? data['error']}');
           throw TikTokApiException(
             'خطأ في تبادل الرمز: ${data['error_description'] ?? data['error']}',
           );
         }
 
-        // معالجة أنماط الاستجابة المختلفة
+        // استخراج البيانات من الاستجابة
         if (data.containsKey('access_token')) {
           return data;
         } else if (data.containsKey('data') && data['data'] != null) {
@@ -287,8 +321,7 @@ class TikTokService {
           }
         }
 
-        throw TikTokApiException(
-            'البيانات المستلمة لا تحتوي على رمز الوصول: $data');
+        throw TikTokApiException('البيانات المستلمة لا تحتوي على رمز الوصول');
       } else {
         throw TikTokApiException(
           'فشل في تبادل رمز المصادقة: ${response.body}',

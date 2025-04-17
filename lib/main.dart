@@ -13,6 +13,7 @@ import 'screens/posts/create_post_screen.dart';
 import 'screens/pages/pages_screen.dart';
 import 'screens/whatsapp/whatsapp_setup_screen.dart';
 import 'screens/tiktok/tiktok_setup_screen.dart';
+import 'screens/tiktok/tiktok_manual_setup_screen.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -64,6 +65,7 @@ class MyApp extends StatelessWidget {
           '/pages': (context) => const PagesScreen(),
           '/whatsapp_setup': (context) => const WhatsAppSetupScreen(),
           '/tiktok_setup': (context) => const TikTokSetupScreen(),
+          '/tiktok_manual_setup': (context) => const TikTokManualSetupScreen(),
         },
       ),
     );
