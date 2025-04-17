@@ -211,17 +211,34 @@ class TikTokProvider with ChangeNotifier {
     required String refreshToken,
     required int expiresIn,
     String? openId,
+    List<String>? scopes,
   }) async {
     try {
       _isLoading = true;
       _error = null;
       notifyListeners();
 
+      // تحقق من النطاقات المطلوبة أولاً (إضافة جديدة)
+      final requiredScopes = ['user.info.basic'];
+
+      // إذا كانت النطاقات محددة، تحقق منها
+      if (scopes != null && scopes.isNotEmpty) {
+        final hasRequiredScopes =
+            requiredScopes.every((scope) => scopes.contains(scope));
+        if (!hasRequiredScopes) {
+          _error =
+              'رمز الوصول لا يحتوي على النطاقات المطلوبة: ${requiredScopes.join(", ")}';
+          _isLoading = false;
+          notifyListeners();
+          return false;
+        }
+      }
+
       // إذا لم يتم توفير معرف المستخدم، نحاول الحصول عليه من API
       String userId = openId ?? '';
       if (openId == null) {
         try {
-          // الحصول على معلومات المستخدم باستخدام الرمز المقدم
+          // محاولة الحصول على معلومات المستخدم باستخدام الرمز المقدم
           final userInfo = await _tikTokService.getUserInfo(accessToken);
           userId = userInfo['open_id'] ?? '';
 
@@ -230,7 +247,15 @@ class TikTokProvider with ChangeNotifier {
                 'لم نتمكن من الحصول على معرف المستخدم من واجهة برمجة التطبيقات');
           }
         } catch (e) {
-          _error = 'خطأ في التحقق من الرمز: $e';
+          // إضافة رسالة خطأ أكثر وضوحاً
+          if (e
+              .toString()
+              .contains('user did not authorize the scope required')) {
+            _error =
+                'خطأ في النطاقات: يرجى التأكد من منح الصلاحيات التالية عند إنشاء رمز الوصول: ${requiredScopes.join(", ")}';
+          } else {
+            _error = 'خطأ في التحقق من الرمز: $e';
+          }
           _isLoading = false;
           notifyListeners();
           return false;
@@ -243,7 +268,7 @@ class TikTokProvider with ChangeNotifier {
       // إنشاء حساب بالبيانات المقدمة
       final account = TikTokAccount(
         id: userId,
-        username: 'مستخدم TikTok', // سيتم تحديثه لاحقًا
+        username: 'مستخدم TikTok', // سيتم تحديثه لاحقًا إذا أمكن
         accessToken: accessToken,
         tokenExpiry: tokenExpiry,
         refreshToken: refreshToken,

@@ -382,24 +382,58 @@ class TikTokService {
       final response = await _client.get(
         Uri.parse(_userInfoUrl).replace(
           queryParameters: {
-            'fields':
-                'open_id,union_id,avatar_url,display_name,bio_description,profile_deep_link',
+            'fields': 'open_id,union_id,avatar_url,display_name',
           },
         ),
         headers: {'Authorization': 'Bearer $accessToken'},
       );
 
+      print(
+          'استجابة الحصول على معلومات المستخدم: ${response.statusCode} - ${response.body}');
+
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
 
-        if (data['error']['code'] != 'ok') {
-          throw TikTokApiException(
-            'خطأ في الحصول على معلومات المستخدم: ${data['error']['message']}',
-            statusCode: response.statusCode,
-          );
+        // تعديل لدعم مختلف أشكال الاستجابة في الإصدار v2
+        if (data.containsKey('error')) {
+          final error = data['error'];
+          final errorCode = error['code'];
+
+          if (errorCode != 'ok') {
+            if (error['message'].toString().contains('scope') ||
+                error['message'].toString().contains('authorize')) {
+              throw TikTokApiException(
+                'المستخدم لم يمنح النطاقات المطلوبة. تأكد من طلب النطاقات التالية أثناء المصادقة: user.info.basic',
+                statusCode: response.statusCode,
+              );
+            }
+
+            throw TikTokApiException(
+              'خطأ في الحصول على معلومات المستخدم: ${error['message']}',
+              statusCode: response.statusCode,
+            );
+          }
         }
 
-        return data['data'];
+        // فحص هيكل البيانات والتعامل مع الأنماط المختلفة
+        if (data.containsKey('data')) {
+          final nestedData = data['data'];
+
+          if (nestedData is Map<String, dynamic> &&
+              nestedData.containsKey('user')) {
+            return nestedData['user'];
+          } else {
+            return nestedData;
+          }
+        }
+
+        // استجابة مباشرة
+        return data;
+      } else if (response.statusCode == 401) {
+        throw TikTokApiException(
+          'فشل في مصادقة رمز الوصول. تأكد من صلاحية الرمز والنطاقات المطلوبة.',
+          statusCode: response.statusCode,
+        );
       } else {
         throw TikTokApiException(
           'فشل في الحصول على معلومات المستخدم: ${response.body}',
@@ -407,6 +441,7 @@ class TikTokService {
         );
       }
     } catch (e) {
+      print('خطأ في الحصول على معلومات المستخدم: $e');
       if (e is TikTokApiException) rethrow;
       throw TikTokApiException('خطأ في الحصول على معلومات المستخدم: $e');
     }

@@ -1,8 +1,7 @@
-// ملف جديد: lib/screens/tiktok/tiktok_manual_setup_screen.dart
-
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/tiktok_provider.dart';
+import '../../config/app_config.dart';
 
 class TikTokManualSetupScreen extends StatefulWidget {
   const TikTokManualSetupScreen({Key? key}) : super(key: key);
@@ -19,6 +18,10 @@ class _TikTokManualSetupScreenState extends State<TikTokManualSetupScreen> {
   final _expiresInController =
       TextEditingController(text: '86400'); // القيمة الافتراضية: 24 ساعة
   final _openIdController = TextEditingController(); // اختياري
+
+  // إضافة قائمة بالنطاقات
+  final List<String> _selectedScopes = [...AppConfig.tiktokPermissions];
+
   bool _isSubmitting = false;
 
   @override
@@ -43,12 +46,13 @@ class _TikTokManualSetupScreenState extends State<TikTokManualSetupScreen> {
       // تحويل مدة الصلاحية إلى رقم صحيح
       int expiresIn = int.tryParse(_expiresInController.text) ?? 86400;
 
-      // استدعاء طريقة المصادقة باستخدام الرمز الخارجي
+      // استدعاء طريقة المصادقة باستخدام الرمز الخارجي مع تمرير النطاقات
       final success = await provider.authenticateWithManualToken(
         accessToken: _accessTokenController.text,
         refreshToken: _refreshTokenController.text,
         expiresIn: expiresIn,
         openId: _openIdController.text.isEmpty ? null : _openIdController.text,
+        scopes: _selectedScopes,
       );
 
       if (!mounted) return;
@@ -100,28 +104,39 @@ class _TikTokManualSetupScreenState extends State<TikTokManualSetupScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // تعليمات
+              // تعليمات محسنة مع التأكيد على النطاقات
               Card(
                 elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    children: const [
-                      Text(
+                    children: [
+                      const Text(
                         'تعليمات',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      SizedBox(height: 8),
-                      Text(
+                      const SizedBox(height: 8),
+                      const Text(
                         '1. استخدم Postman للحصول على رمز الوصول عبر عملية TikTok OAuth\n'
-                        '2. انسخ رمز الوصول (access_token) ورمز التحديث (refresh_token) من استجابة Postman\n'
-                        '3. أدخل هذه الرموز في الحقول أدناه للربط مع حساب TikTok الخاص بك',
+                        '2. تأكد من طلب النطاقات المطلوبة (المحددة أدناه) أثناء المصادقة\n'
+                        '3. انسخ رمز الوصول (access_token) ورمز التحديث (refresh_token) من استجابة Postman\n'
+                        '4. أدخل هذه الرموز في الحقول أدناه للربط مع حساب TikTok الخاص بك',
                         style: TextStyle(fontSize: 14),
                       ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'النطاقات المطلوبة:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.red,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      _buildScopesSection(),
                     ],
                   ),
                 ),
@@ -215,5 +230,49 @@ class _TikTokManualSetupScreenState extends State<TikTokManualSetupScreen> {
         ),
       ),
     );
+  }
+
+  // إضافة قسم عرض النطاقات المطلوبة
+  Widget _buildScopesSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: AppConfig.tiktokPermissions.map((scope) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4.0),
+          child: Row(
+            children: [
+              const Icon(Icons.check_circle, color: Colors.green, size: 16),
+              const SizedBox(width: 8),
+              Text(
+                scope,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _getScopeDescription(scope),
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey,
+                ),
+              ),
+            ],
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // إضافة وصف لكل نطاق
+  String _getScopeDescription(String scope) {
+    switch (scope) {
+      case 'user.info.basic':
+        return '(معلومات المستخدم الأساسية)';
+      case 'video.upload':
+        return '(تحميل الفيديو)';
+      default:
+        return '';
+    }
   }
 }
