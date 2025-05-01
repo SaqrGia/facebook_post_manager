@@ -11,6 +11,7 @@ import '../../widgets/instagram_selection_list.dart';
 import '../../widgets/whatsapp/whatsapp_group_selection_list.dart';
 import '../../widgets/tiktok/tiktok_account_selection_list.dart';
 import 'package:mime/mime.dart';
+import '../../widgets/whatsapp/whatsapp_channel_selection_list.dart';
 
 class CreatePostScreen extends StatefulWidget {
   const CreatePostScreen({Key? key}) : super(key: key);
@@ -23,6 +24,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   final _formKey = GlobalKey<FormState>();
   final _messageController = TextEditingController();
   final _linkController = TextEditingController();
+  bool _showWhatsAppChannels = false;
   bool _showPages = false;
   bool _showInstagramAccounts = false;
   bool _showWhatsAppGroups = false;
@@ -99,13 +101,15 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
     final pagesProvider = context.read<PagesProvider>();
     final whatsappProvider = context.read<WhatsAppProvider>();
-    final tiktokProvider = context.read<TikTokProvider>(); // إضافة جديدة
+    final tiktokProvider = context.read<TikTokProvider>();
 
     // التحقق من اختيار منصة واحدة على الأقل
     bool hasSelectedPlatform = pagesProvider.selectedPages.isNotEmpty ||
         pagesProvider.selectedInstagramAccounts.isNotEmpty ||
         whatsappProvider.selectedGroupIds.isNotEmpty ||
-        tiktokProvider.selectedAccountIds.isNotEmpty; // إضافة جديدة
+        whatsappProvider.selectedChannelIds
+            .isNotEmpty || // إضافة التحقق من اختيار قنوات واتساب
+        tiktokProvider.selectedAccountIds.isNotEmpty;
 
     if (!hasSelectedPlatform) {
       _showMessage(
@@ -176,10 +180,11 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
     setState(() => _isSubmitting = true);
 
     try {
-      // معالجة منفصلة للفيسبوك/انستغرام وواتساب وتيك توك
+      // معالجة منفصلة لمنصات مختلفة
       bool fbIgSuccess = true;
-      bool waSuccess = true;
-      bool ttSuccess = true; // إضافة جديدة
+      bool waGroupsSuccess = true;
+      bool waChannelsSuccess = true; // إضافة متغير للقنوات
+      bool ttSuccess = true;
       String errorMessage = '';
 
       // النشر على فيسبوك وانستغرام
@@ -202,7 +207,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         }
       }
 
-      // النشر على واتساب
+      // النشر على مجموعات واتساب
       if (whatsappProvider.selectedGroupIds.isNotEmpty) {
         try {
           // إرسال للمجموعات المحددة
@@ -213,18 +218,39 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
           );
 
           // التحقق من نجاح النشر على الأقل لمجموعة واحدة
-          waSuccess = results.values.any((success) => success);
+          waGroupsSuccess = results.values.any((success) => success);
 
-          if (!waSuccess && whatsappProvider.error != null) {
-            errorMessage += 'واتساب: ${whatsappProvider.error}\n';
+          if (!waGroupsSuccess && whatsappProvider.error != null) {
+            errorMessage += 'مجموعات واتساب: ${whatsappProvider.error}\n';
           }
         } catch (e) {
-          waSuccess = false;
-          errorMessage += 'واتساب: $e\n';
+          waGroupsSuccess = false;
+          errorMessage += 'مجموعات واتساب: $e\n';
         }
       }
 
-      // النشر على تيك توك (إضافة جديدة)
+      // النشر على قنوات واتساب - إضافة هذه الفقرة
+      if (whatsappProvider.selectedChannelIds.isNotEmpty) {
+        try {
+          // إرسال للقنوات المحددة
+          final results = await whatsappProvider.sendPostToChannels(
+            message: _messageController.text,
+            mediaFiles: _selectedMedia,
+          );
+
+          // التحقق من نجاح النشر على الأقل لقناة واحدة
+          waChannelsSuccess = results.values.any((success) => success);
+
+          if (!waChannelsSuccess && whatsappProvider.error != null) {
+            errorMessage += 'قنوات واتساب: ${whatsappProvider.error}\n';
+          }
+        } catch (e) {
+          waChannelsSuccess = false;
+          errorMessage += 'قنوات واتساب: $e\n';
+        }
+      }
+
+      // النشر على تيك توك
       if (hasTikTokSelected && hasVideo) {
         try {
           ttSuccess = await tiktokProvider.uploadVideoToTikTok(
@@ -245,12 +271,13 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
 
       // تحديد رسالة النجاح بناءً على نتائج النشر
       String successMessage = '';
-      if (fbIgSuccess && waSuccess && ttSuccess) {
+      if (fbIgSuccess && waGroupsSuccess && waChannelsSuccess && ttSuccess) {
         successMessage = 'تم نشر المنشور بنجاح على جميع المنصات';
       } else {
         List<String> successPlatforms = [];
         if (fbIgSuccess) successPlatforms.add('فيسبوك/انستغرام');
-        if (waSuccess) successPlatforms.add('واتساب');
+        if (waGroupsSuccess) successPlatforms.add('مجموعات واتساب');
+        if (waChannelsSuccess) successPlatforms.add('قنوات واتساب');
         if (ttSuccess) successPlatforms.add('تيك توك');
 
         if (successPlatforms.isNotEmpty) {
@@ -271,14 +298,15 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
         _showPages = false;
         _showInstagramAccounts = false;
         _showWhatsAppGroups = false;
-        _showTikTokAccounts = false; // إضافة جديدة
+        _showWhatsAppChannels = false; // إضافة متغير القنوات
+        _showTikTokAccounts = false;
         _selectedMedia = null;
         _isVideo = false;
       });
 
       pagesProvider.clearSelection();
       whatsappProvider.clearSelection();
-      tiktokProvider.clearSelection(); // إضافة جديدة
+      tiktokProvider.clearSelection();
     } catch (e) {
       if (!mounted) return;
       _showMessage(context, 'حدث خطأ: $e', isError: true);
@@ -703,9 +731,10 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                       );
                     }
 
-                    // إذا كان متصلاً، اعرض قائمة المجموعات
+                    // إذا كان متصلاً، اعرض قائمة المجموعات والقنوات
                     return Column(
                       children: [
+                        // اختيار مجموعات واتساب
                         ListTile(
                           title: const Text(
                             'اختيار مجموعات واتساب',
@@ -733,6 +762,35 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
                         ),
                         if (_showWhatsAppGroups)
                           const WhatsAppGroupSelectionList(),
+
+                        // اختيار قنوات واتساب
+                        ListTile(
+                          title: const Text(
+                            'اختيار قنوات واتساب',
+                            style: TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                  '${whatsappProvider.selectedChannelIds.length} مختارة'),
+                              const SizedBox(width: 8),
+                              Icon(
+                                _showWhatsAppChannels
+                                    ? Icons.expand_less
+                                    : Icons.expand_more,
+                              ),
+                            ],
+                          ),
+                          onTap: () {
+                            setState(() =>
+                                _showWhatsAppChannels = !_showWhatsAppChannels);
+                          },
+                          leading: const Icon(Icons.broadcast_on_personal,
+                              color: Colors.lightBlue),
+                        ),
+                        if (_showWhatsAppChannels)
+                          const WhatsAppChannelSelectionList(),
                       ],
                     );
                   },

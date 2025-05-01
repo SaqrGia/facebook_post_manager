@@ -1,1 +1,1 @@
-https://www.tiktok.com/v2/auth/authorize?client_key=sbawd7xakgmyt8g669&redirect_uri=https://saqrgia.github.io/tiktok-auth-callback&response_type=code&scope=user.info.basic,video.upload&state=myappstate1203
+https://www.tiktok.com/v2/auth/authorize?client_key=sbawd7xakgmyt8g669&redirect_uri=https://saqrgia.github.io/tiktok-auth-callback&response_type=code&scope=user.info.basic,video.upload,video.publish&state=myappstate1203

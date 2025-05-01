@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:mime/mime.dart';
 import 'package:path/path.dart' as path;
 import '../models/whatsapp_group.dart';
+import '../models/whatsapp_channel.dart';
 import '../config/app_config.dart';
 
 class WhatsAppApiException implements Exception {
@@ -264,6 +265,7 @@ class WhatsAppService {
     required String phoneId,
     required String groupId,
     required String message,
+    bool isChannel = false,
   }) async {
     try {
       // رفض إرسال الرسائل الفارغة
@@ -272,7 +274,11 @@ class WhatsAppService {
         throw WhatsAppApiException('لا يمكن إرسال رسالة فارغة');
       }
 
-      print('إرسال رسالة نصية إلى المجموعة: $groupId');
+      print(
+          'إرسال رسالة نصية إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
+
+      // تغيير نوع الرسالة حسب ما إذا كانت للقنوات أو المجموعات
+      final messageType = isChannel ? 'channel_text' : 'text';
 
       final response = await _client
           .post(
@@ -280,7 +286,7 @@ class WhatsAppService {
         headers: _headers,
         body: json.encode({
           'to_number': groupId,
-          'type': 'text',
+          'type': messageType,
           'message': message,
         }),
       )
@@ -307,11 +313,121 @@ class WhatsAppService {
     }
   }
 
+  // إنشاء قناة جديدة
+  Future<WhatsAppChannel?> createChannel({
+    required String phoneId,
+    required String channelName,
+    String? description,
+  }) async {
+    try {
+      print('إنشاء قناة جديدة باسم: $channelName');
+
+      final response = await _client
+          .post(
+        Uri.parse('$baseUrl/$productId/$phoneId/createChannel'),
+        headers: _headers,
+        body: json.encode({
+          'name': channelName,
+          'description': description ?? '',
+        }),
+      )
+          .timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw TimeoutException('انتهت مهلة إنشاء القناة');
+        },
+      );
+
+      print('استجابة إنشاء القناة: ${response.statusCode}');
+      print('محتوى الاستجابة: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data['success'] != true || !data.containsKey('data')) {
+          print('تم استلام استجابة ناجحة ولكن البيانات غير صالحة');
+          print('استجابة API: $data');
+          return null;
+        }
+
+        final channelData = data['data'];
+
+        // إنشاء كائن القناة
+        return WhatsAppChannel(
+          id: channelData['id'] ?? '',
+          channelName: channelData['name'] ?? channelName,
+          owner: true, // نفترض أنك المالك لأنك أنشأتها
+          subscribeCount: 1, // نبدأ من 1 (أنت)
+          inviteLink: null,
+        );
+      } else {
+        throw WhatsAppApiException(
+          'فشل في إنشاء القناة: ${response.body}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      print('خطأ في إنشاء القناة: $e');
+      if (e is WhatsAppApiException) rethrow;
+      throw WhatsAppApiException('خطأ في إنشاء القناة: $e');
+    }
+  }
+
+  // الحصول على رابط دعوة للقناة
+  Future<String?> getChannelInviteLink({
+    required String phoneId,
+    required String channelId,
+  }) async {
+    try {
+      print('الحصول على رابط دعوة للقناة: $channelId');
+
+      final response = await _client
+          .post(
+        Uri.parse('$baseUrl/$productId/$phoneId/channel/inviteCode'),
+        headers: _headers,
+        body: json.encode({
+          'conversation_id': channelId,
+        }),
+      )
+          .timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          throw TimeoutException('انتهت مهلة الحصول على رابط الدعوة');
+        },
+      );
+
+      print('استجابة الحصول على رابط الدعوة: ${response.statusCode}');
+      print('محتوى الاستجابة: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data['success'] != true || !data.containsKey('data')) {
+          print('تم استلام استجابة ناجحة ولكن البيانات غير صالحة');
+          print('استجابة API: $data');
+          return null;
+        }
+
+        return data['data'] as String?;
+      } else {
+        throw WhatsAppApiException(
+          'فشل في الحصول على رابط الدعوة: ${response.body}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      print('خطأ في الحصول على رابط الدعوة: $e');
+      if (e is WhatsAppApiException) rethrow;
+      throw WhatsAppApiException('خطأ في الحصول على رابط الدعوة: $e');
+    }
+  }
+
   Future<bool> sendMultipleMedia({
     required String phoneId,
     required String groupId,
     required List<File> files,
     String? caption,
+    bool isChannel = false,
   }) async {
     try {
       // التحقق من وجود الملفات
@@ -320,7 +436,8 @@ class WhatsAppService {
         throw WhatsAppApiException('لا توجد ملفات وسائط للإرسال');
       }
 
-      print('إرسال ${files.length} وسائط إلى المجموعة: $groupId');
+      print(
+          'إرسال ${files.length} وسائط إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
 
       // إضافة تتبع إضافي لتشخيص المشكلة
       for (int i = 0; i < files.length; i++) {
@@ -339,6 +456,7 @@ class WhatsAppService {
           groupId: groupId,
           message:
               "$caption\n\n(${files.length} صور)", // إضافة عدد الصور للنص فقط
+          isChannel: isChannel,
         );
 
         // لتجنب الازدواجية، نحذف النص التوضيحي من الصور
@@ -365,7 +483,7 @@ class WhatsAppService {
           }
 
           print(
-              'إرسال الصورة ${i + 1} من ${files.length} إلى المجموعة $groupId');
+              'إرسال الصورة ${i + 1} من ${files.length} إلى ${isChannel ? "القناة" : "المجموعة"} $groupId');
 
           // تأكد من وجود الملف قبل الإرسال
           if (!await file.exists()) {
@@ -384,6 +502,7 @@ class WhatsAppService {
             groupId: groupId,
             file: file,
             caption: currentCaption,
+            isChannel: isChannel,
           );
 
           if (success) {
@@ -423,6 +542,7 @@ class WhatsAppService {
             phoneId: phoneId,
             groupId: groupId,
             message: '$caption (تعذر إرسال الصور)',
+            isChannel: isChannel,
           );
         } catch (_) {
           // إذا فشل أيضًا
@@ -442,6 +562,7 @@ class WhatsAppService {
     required String groupId,
     required File file,
     String? caption,
+    bool isChannel = false,
   }) async {
     try {
       // التحقق من وجود الملف
@@ -450,7 +571,7 @@ class WhatsAppService {
         throw WhatsAppApiException('ملف الوسائط غير موجود');
       }
 
-      print('إرسال وسائط إلى المجموعة: $groupId');
+      print('إرسال وسائط إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
 
       // تحديد نوع الملف
       final mimeType = lookupMimeType(file.path) ?? 'application/octet-stream';
@@ -460,10 +581,13 @@ class WhatsAppService {
       final bytes = await file.readAsBytes();
       final base64File = base64Encode(bytes);
 
-      // إنشاء بيانات الطلب - استخدام نفس التنسيق للصور والفيديو (data URI)
+      // تغيير نوع الرسالة حسب ما إذا كانت للقنوات أو المجموعات
+      final messageType = isChannel ? 'channel_media' : 'media';
+
+      // إنشاء بيانات الطلب
       final Map<String, dynamic> payload = {
         'to_number': groupId,
-        'type': 'media',
+        'type': messageType,
         'message': 'data:$mimeType;base64,$base64File',
         'filename': fileName,
       };
@@ -511,9 +635,9 @@ class WhatsAppService {
             phoneId: phoneId,
             groupId: groupId,
             message: '$caption (تعذر إرسال الوسائط)',
+            isChannel: isChannel,
           );
         } catch (_) {
-          // إذا فشل أيضًا
           if (e is WhatsAppApiException) rethrow;
           throw WhatsAppApiException('خطأ في إرسال الوسائط: $e');
         }
@@ -531,13 +655,15 @@ class WhatsAppService {
     String message = '',
     File? mediaFile,
     List<File>? mediaFiles,
+    bool isChannel = false,
   }) async {
     try {
       // أضف تأخير قصير قبل إرسال الطلب لتجنب التقييد على API
       await Future.delayed(const Duration(milliseconds: 300));
 
       // طباعة معلومات تشخيصية إضافية
-      print('sendPost - groupId: $groupId, message length: ${message.length}');
+      print(
+          'sendPost - ${isChannel ? "channelId" : "groupId"}: $groupId, message length: ${message.length}');
       print(
           'sendPost - mediaFile: ${mediaFile != null}, mediaFiles: ${mediaFiles?.length ?? 0}');
 
@@ -547,7 +673,12 @@ class WhatsAppService {
       // تحقق من وجود ملف وسائط منفرد صالح
       bool hasSingleFile = mediaFile != null && await mediaFile.exists();
 
-      // إذا كان لدينا ملفات متعددة (أهم من ملف منفرد)
+      // تحقق من وجود ملف واحد في قائمة الملفات
+      bool hasSingleFileInList = mediaFiles != null &&
+          mediaFiles.length == 1 &&
+          await mediaFiles.first.exists();
+
+      // إذا كان لدينا ملفات متعددة
       if (hasMultipleFiles) {
         // التحقق من أن الملفات موجودة
         List<File> validFiles = [];
@@ -565,12 +696,26 @@ class WhatsAppService {
         }
 
         // إرسال الوسائط المتعددة مع الرسالة النصية
-        print('إرسال ${validFiles.length} ملفات وسائط إلى المجموعة: $groupId');
+        print(
+            'إرسال ${validFiles.length} ملفات وسائط إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
         return await sendMultipleMedia(
           phoneId: phoneId,
           groupId: groupId,
           files: validFiles,
           caption: message.isNotEmpty ? message : null,
+          isChannel: isChannel,
+        );
+      }
+      // إذا كان لدينا ملف منفرد في قائمة الملفات
+      else if (hasSingleFileInList) {
+        print(
+            'إرسال ملف واحد من قائمة إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
+        return await sendMedia(
+          phoneId: phoneId,
+          groupId: groupId,
+          file: mediaFiles!.first,
+          caption: message.isNotEmpty ? message : null,
+          isChannel: isChannel,
         );
       }
       // إذا كان لدينا ملف منفرد
@@ -578,28 +723,31 @@ class WhatsAppService {
         // تحقق من حجم الملف وتحذير إذا كان كبيرًا جدًا
         final fileSize = await mediaFile!.length();
         if (fileSize > 10 * 1024 * 1024) {
-          // أكثر من 10 ميجابايت
           print(
               'تحذير: حجم الملف كبير (${(fileSize / (1024 * 1024)).toStringAsFixed(2)} ميجابايت) وقد يفشل الإرسال');
         }
 
-        print('إرسال وسائط فردية إلى المجموعة: $groupId');
+        print(
+            'إرسال وسائط فردية إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
         // إرسال الوسائط مع أو بدون تعليق (حسب ما إذا كان النص فارغًا أم لا)
         return await sendMedia(
           phoneId: phoneId,
           groupId: groupId,
-          file: mediaFile!,
+          file: mediaFile,
           caption: message.isNotEmpty ? message : null,
+          isChannel: isChannel,
         );
       }
       // إذا كان لدينا رسالة نصية فقط
       else if (message.isNotEmpty) {
         // إرسال رسالة نصية فقط
-        print('إرسال رسالة نصية إلى المجموعة: $groupId');
+        print(
+            'إرسال رسالة نصية إلى ${isChannel ? "القناة" : "المجموعة"}: $groupId');
         return await sendTextMessage(
           phoneId: phoneId,
           groupId: groupId,
           message: message,
+          isChannel: isChannel,
         );
       }
       // لا توجد وسائط ولا رسالة نصية
@@ -611,6 +759,110 @@ class WhatsAppService {
       print('خطأ في إرسال المنشور: $e');
       if (e is WhatsAppApiException) rethrow;
       throw WhatsAppApiException('خطأ في إرسال المنشور: $e');
+    }
+  }
+
+  Future<bool> sendMessageToChannel({
+    required String phoneId,
+    required String channelId,
+    required String message,
+    File? mediaFile,
+    List<File>? mediaFiles,
+  }) async {
+    try {
+      // استخدام نفس منطق إرسال المنشور مع تعديل لاستخدامه للقنوات
+      return await sendPost(
+        phoneId: phoneId,
+        groupId: channelId, // نستخدم معرف القناة هنا
+        message: message,
+        mediaFile: mediaFile,
+        mediaFiles: mediaFiles,
+        isChannel: true, // علامة لتوضيح أن هذه قناة وليست مجموعة
+      );
+    } catch (e) {
+      print('خطأ في إرسال الرسالة إلى القناة: $e');
+      if (e is WhatsAppApiException) rethrow;
+      throw WhatsAppApiException('خطأ في إرسال الرسالة إلى القناة: $e');
+    }
+  }
+
+  Future<List<WhatsAppChannel>> getChannels({required String phoneId}) async {
+    try {
+      print('جلب قنوات واتساب للهاتف: $phoneId');
+
+      final response = await _client
+          .get(
+        Uri.parse('$baseUrl/$productId/$phoneId/getChannels'),
+        headers: _headers,
+      )
+          .timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          throw TimeoutException('انتهت مهلة جلب القنوات');
+        },
+      );
+
+      print('استجابة جلب القنوات: ${response.statusCode}');
+      print('محتوى الاستجابة: ${response.body}');
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+
+        if (data['success'] != true || !data.containsKey('data')) {
+          print('تم استلام استجابة ناجحة ولكن البيانات غير صالحة');
+          print('استجابة API: $data');
+          return [];
+        }
+
+        final List<dynamic> channelsData = data['data'];
+        print('عدد القنوات المستلمة: ${channelsData.length}');
+
+        // توضيح محتوى البيانات للتشخيص
+        if (channelsData.isNotEmpty) {
+          print('عينة من بيانات القناة الأولى: ${channelsData[0]}');
+        }
+
+        return channelsData.map((channel) {
+          // استخراج معرف القناة
+          String channelId = '';
+          if (channel['id'] != null) {
+            if (channel['id'] is Map) {
+              // إذا كان المعرف عبارة عن كائن، استخدم _serialized
+              channelId = channel['id']['_serialized'] ?? '';
+            } else {
+              channelId = channel['id'].toString();
+            }
+          }
+
+          if (channelId.isEmpty) {
+            print('تحذير: قناة بدون معرف: $channel');
+            channelId = 'unknown_${DateTime.now().millisecondsSinceEpoch}';
+          }
+
+          // استخراج اسم القناة
+          String channelName = channel['channelName'] ?? 'قناة بدون اسم';
+
+          return WhatsAppChannel(
+            id: channelId,
+            channelName: channelName,
+            owner: channel['owner'] ?? false,
+            subscribeCount: channel['subscribeCount'],
+            inviteLink: channel['inviteLink'],
+          );
+        }).toList();
+      } else {
+        print('فشل في جلب قنوات واتساب، رمز الحالة: ${response.statusCode}');
+        print('محتوى الاستجابة: ${response.body}');
+
+        throw WhatsAppApiException(
+          'فشل في جلب قنوات واتساب (${response.statusCode}): ${response.body}',
+          statusCode: response.statusCode,
+        );
+      }
+    } catch (e) {
+      print('خطأ في جلب قنوات واتساب: $e');
+      if (e is WhatsAppApiException) rethrow;
+      throw WhatsAppApiException('خطأ في جلب قنوات واتساب: $e');
     }
   }
 }

@@ -14,6 +14,10 @@ TikTokAccount _$TikTokAccountFromJson(Map<String, dynamic> json) =>
       accessToken: json['accessToken'] as String,
       tokenExpiry: DateTime.parse(json['tokenExpiry'] as String),
       refreshToken: json['refreshToken'] as String,
+      scopes: (json['scopes'] as List<dynamic>?)
+              ?.map((e) => e as String)
+              .toList() ??
+          const [],
     );
 
 Map<String, dynamic> _$TikTokAccountToJson(TikTokAccount instance) =>
@@ -24,4 +28,5 @@ Map<String, dynamic> _$TikTokAccountToJson(TikTokAccount instance) =>
       'accessToken': instance.accessToken,
       'tokenExpiry': instance.tokenExpiry.toIso8601String(),
       'refreshToken': instance.refreshToken,
+      'scopes': instance.scopes,
     };

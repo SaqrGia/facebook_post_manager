@@ -221,16 +221,45 @@ class TikTokProvider with ChangeNotifier {
       // تحقق من النطاقات المطلوبة أولاً (إضافة جديدة)
       final requiredScopes = ['user.info.basic'];
 
+      // إذا كان التطبيق في وضع Sandbox، نضيف النطاقات المطلوبة للتحميل
+      if (AppConfig.isTikTokSandboxMode) {
+        requiredScopes.addAll(['video.upload', 'video.publish']);
+      }
+
       // إذا كانت النطاقات محددة، تحقق منها
+      List<String> accountScopes = [];
       if (scopes != null && scopes.isNotEmpty) {
-        final hasRequiredScopes =
-            requiredScopes.every((scope) => scopes.contains(scope));
-        if (!hasRequiredScopes) {
-          _error =
-              'رمز الوصول لا يحتوي على النطاقات المطلوبة: ${requiredScopes.join(", ")}';
-          _isLoading = false;
-          notifyListeners();
-          return false;
+        accountScopes = List<String>.from(scopes);
+
+        // في وضع غير Sandbox، نتحقق من النطاقات المطلوبة
+        if (!AppConfig.isTikTokSandboxMode) {
+          final hasRequiredScopes =
+              requiredScopes.every((scope) => scopes.contains(scope));
+          if (!hasRequiredScopes) {
+            _error =
+                'رمز الوصول لا يحتوي على النطاقات المطلوبة: ${requiredScopes.join(", ")}';
+            _isLoading = false;
+            notifyListeners();
+            return false;
+          }
+        }
+      } else {
+        // إذا لم يتم توفير النطاقات، نحاول استخراجها من رمز الوصول
+        try {
+          // محاولة استخراج النطاقات من رمز الوصول
+          final tokenInfo = await _tikTokService.getUserInfo(accessToken);
+          if (tokenInfo.containsKey('scopes')) {
+            accountScopes = List<String>.from(tokenInfo['scopes']);
+          }
+        } catch (e) {
+          print('تحذير: فشل في استخراج النطاقات من رمز الوصول: $e');
+          // في وضع Sandbox، نستمر حتى لو فشل استخراج النطاقات
+          if (!AppConfig.isTikTokSandboxMode) {
+            _error = 'فشل في التحقق من النطاقات: $e';
+            _isLoading = false;
+            notifyListeners();
+            return false;
+          }
         }
       }
 
@@ -272,6 +301,7 @@ class TikTokProvider with ChangeNotifier {
         accessToken: accessToken,
         tokenExpiry: tokenExpiry,
         refreshToken: refreshToken,
+        scopes: accountScopes, // تخزين النطاقات
       );
 
       // محاولة الحصول على مزيد من معلومات المستخدم
@@ -340,6 +370,7 @@ class TikTokProvider with ChangeNotifier {
   }
 
   /// المنطق الداخلي لمعالجة رمز المصادقة
+  /// المنطق الداخلي لمعالجة رمز المصادقة
   Future<bool> _processAuthCode(String code) async {
     try {
       print('معالجة رمز التفويض: $code');
@@ -352,6 +383,10 @@ class TikTokProvider with ChangeNotifier {
       final refreshToken = tokenData['refresh_token'] ?? '';
       final openId = tokenData['open_id'];
       final expiresIn = tokenData['expires_in'] as int;
+
+      // استخراج النطاقات من استجابة الحصول على رمز الوصول
+      final scopes = tokenData['scope']?.toString().split(',') ?? [];
+      print('النطاقات المستلمة في رمز الوصول: $scopes');
 
       if (accessToken == null || openId == null) {
         throw Exception('بيانات الرمز غير مكتملة');
@@ -371,6 +406,7 @@ class TikTokProvider with ChangeNotifier {
         accessToken: accessToken,
         tokenExpiry: tokenExpiry,
         refreshToken: refreshToken,
+        scopes: scopes, // تخزين النطاقات
       );
 
       // التحقق مما إذا كان الحساب موجودًا بالفعل
@@ -498,6 +534,8 @@ class TikTokProvider with ChangeNotifier {
   }
 
   /// تحميل فيديو إلى تيك توك
+  /// تحميل فيديو إلى تيك توك
+  /// تحميل فيديو إلى تيك توك
   Future<bool> uploadVideoToTikTok({
     required File videoFile,
     required String caption,
@@ -506,6 +544,28 @@ class TikTokProvider with ChangeNotifier {
       _error = 'الرجاء اختيار حساب تيك توك واحد على الأقل';
       notifyListeners();
       return false;
+    }
+
+    // تحديد ما إذا كان التطبيق في وضع Sandbox
+    bool isSandboxMode = AppConfig.isTikTokSandboxMode;
+
+    // في وضع غير Sandbox، نتحقق من النطاقات قبل محاولة التحميل
+    if (!isSandboxMode) {
+      for (final account in selectedAccounts) {
+        try {
+          // التحقق من نطاقات الحساب
+          if (!account.scopes.contains('video.upload') ||
+              !account.scopes.contains('video.publish')) {
+            _error =
+                'الحساب ${account.username} لا يملك الصلاحيات المطلوبة (video.upload, video.publish). يرجى إعادة ربط الحساب مع النطاقات المطلوبة.';
+            notifyListeners();
+            return false;
+          }
+        } catch (e) {
+          // تجاهل أخطاء التحقق من النطاقات هنا، سيتم التعامل معها لاحقاً
+          print('تحذير: فشل في التحقق من النطاقات: $e');
+        }
+      }
     }
 
     _isUploading = true;
@@ -531,6 +591,10 @@ class TikTokProvider with ChangeNotifier {
 
       for (final account in selectedAccounts) {
         try {
+          // طباعة النطاقات المتاحة للحساب للتشخيص
+          print(
+              'النطاقات المتاحة للحساب ${account.username}: ${account.scopes}');
+
           // استخدام طريقة تحميل الفيديو المبسطة
           _uploadStatus = 'جاري تحميل الفيديو إلى ${account.username}...';
           _uploadProgress = 10;
@@ -544,6 +608,10 @@ class TikTokProvider with ChangeNotifier {
                   await _tikTokService.refreshAccessToken(account.refreshToken);
               accessToken = tokenData['access_token'];
 
+              // تحديث النطاقات من استجابة تجديد الرمز
+              final refreshedScopes =
+                  tokenData['scope']?.toString().split(',') ?? account.scopes;
+
               // تحديث الحساب بالرمز الجديد
               final updatedAccount = account.copyWith(
                 accessToken: accessToken,
@@ -552,6 +620,7 @@ class TikTokProvider with ChangeNotifier {
                 tokenExpiry: DateTime.now().add(
                   Duration(seconds: tokenData['expires_in'] as int),
                 ),
+                scopes: refreshedScopes, // تحديث النطاقات
               );
 
               // تحديث الحساب في القائمة
@@ -561,49 +630,56 @@ class TikTokProvider with ChangeNotifier {
                 await _saveAccounts();
               }
             } catch (e) {
-              print('فشل في تجديد الرمز: $e');
-              continue; // تخطي هذا الحساب والانتقال إلى الحساب التالي
+              throw Exception('فشل في تجديد رمز الوصول: $e');
             }
           }
 
-          // تحميل الفيديو
-          final videoId = await _tikTokService.uploadVideo(
-            accessToken: accessToken,
-            videoFile: videoFile,
-            caption: caption,
-            onProgress: (status, progress) {
-              _uploadStatus = status;
-              _uploadProgress = progress;
-              notifyListeners();
-            },
-          );
+          // استعلام معلومات المنشئ
+          final creatorInfo =
+              await _tikTokService.queryCreatorInfo(accessToken);
 
-          print(
-              'تم تحميل الفيديو بنجاح إلى حساب ${account.username}، معرف الفيديو: $videoId');
+          // تحميل الفيديو - استخدام طريقة بديلة في وضع Sandbox مع حساب خاص
+          String publishId;
+          if (isSandboxMode) {
+            // استخدام طريقة مخصصة للحسابات الخاصة في وضع Sandbox
+            publishId = await _tikTokService.uploadVideoForPrivateAccount(
+              accessToken: accessToken,
+              videoFile: videoFile,
+              caption: caption,
+            );
+          } else {
+            // استخدام الطريقة العادية
+            publishId = await _tikTokService.uploadVideo(
+              accessToken: accessToken,
+              videoFile: videoFile,
+              caption: caption,
+            );
+          }
+
+          _uploadProgress = 100;
+          _uploadStatus = 'تم التحميل بنجاح إلى ${account.username}';
           anySuccess = true;
+          notifyListeners();
         } catch (e) {
           print('فشل في التحميل إلى الحساب ${account.username}: $e');
-          // نستمر بالمحاولة مع الحسابات الأخرى
+          // نستمر في المحاولة مع الحسابات الأخرى
         }
       }
 
+      _isUploading = false;
+
       if (!anySuccess) {
-        throw Exception('فشل في تحميل الفيديو إلى أي حساب مختار');
+        _error = 'فشل في التحميل إلى جميع الحسابات المحددة';
+        notifyListeners();
+        return false;
       }
 
-      _uploadStatus = 'تم تحميل الفيديو بنجاح!';
-      _uploadProgress = 100;
       notifyListeners();
-
-      // تأخير إخفاء مؤشر التحميل
-      await Future.delayed(Duration(seconds: 3));
-      _isUploading = false;
-      notifyListeners();
-
       return true;
     } catch (e) {
-      _error = e.toString();
       _isUploading = false;
+      _error = 'فشل في تحميل الفيديو: $e';
+      print(_error);
       notifyListeners();
       return false;
     }

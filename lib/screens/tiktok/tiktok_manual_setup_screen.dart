@@ -265,12 +265,15 @@ class _TikTokManualSetupScreenState extends State<TikTokManualSetupScreen> {
   }
 
   // إضافة وصف لكل نطاق
+  // إضافة وصف لكل نطاق
   String _getScopeDescription(String scope) {
     switch (scope) {
       case 'user.info.basic':
         return '(معلومات المستخدم الأساسية)';
       case 'video.upload':
         return '(تحميل الفيديو)';
+      case 'video.publish':
+        return '(نشر الفيديو)';
       default:
         return '';
     }

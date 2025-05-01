@@ -6,6 +6,10 @@ part 'tiktok_account.g.dart';
 ///
 /// يخزن معلومات المستخدم ورموز المصادقة اللازمة
 /// للتفاعل مع TikTok API نيابة عن المستخدم
+/// نموذج يمثل حساب TikTok المرتبط في التطبيق
+///
+/// يخزن معلومات المستخدم ورموز المصادقة اللازمة
+/// للتفاعل مع TikTok API نيابة عن المستخدم
 @JsonSerializable()
 class TikTokAccount {
   /// معرف المستخدم الفريد في TikTok (OpenID)
@@ -26,6 +30,9 @@ class TikTokAccount {
   /// رمز التحديث (Refresh Token) لتجديد رمز الوصول
   final String refreshToken;
 
+  /// النطاقات المصرح بها للحساب
+  final List<String> scopes;
+
   TikTokAccount({
     required this.id,
     required this.username,
@@ -33,6 +40,7 @@ class TikTokAccount {
     required this.accessToken,
     required this.tokenExpiry,
     required this.refreshToken,
+    this.scopes = const [], // قيمة افتراضية
   });
 
   /// إنشاء نموذج من بيانات JSON
@@ -53,6 +61,7 @@ class TikTokAccount {
     String? accessToken,
     DateTime? tokenExpiry,
     String? refreshToken,
+    List<String>? scopes,
   }) {
     return TikTokAccount(
       id: id ?? this.id,
@@ -61,13 +70,14 @@ class TikTokAccount {
       accessToken: accessToken ?? this.accessToken,
       tokenExpiry: tokenExpiry ?? this.tokenExpiry,
       refreshToken: refreshToken ?? this.refreshToken,
+      scopes: scopes ?? this.scopes,
     );
   }
 
   /// تمثيل نصي للكائن
   @override
   String toString() {
-    return 'TikTokAccount(id: $id, username: $username, tokenExpiry: $tokenExpiry, isTokenExpired: $isTokenExpired)';
+    return 'TikTokAccount(id: $id, username: $username, tokenExpiry: $tokenExpiry, isTokenExpired: $isTokenExpired, scopes: $scopes)';
   }
 
   /// مقارنة المساواة

@@ -8,9 +8,9 @@ class AppConfig {
   static const String baseUrl = 'https://graph.facebook.com/$graphApiVersion';
 
   // Maytapi WhatsApp Configuration
-  static const String maytapiProductId = 'f7da023e-da13-48eb-812e-a745739944cd';
-  static const String maytapiApiKey = '3e863062-6f04-4f1e-b3db-640a7133c732';
-  static const String maytapiDefaultPhoneId = '77976';
+  static const String maytapiProductId = '031cfc4d-5c90-4270-86ec-23c6125e23df';
+  static const String maytapiApiKey = 'f96d4ee8-05eb-49a0-8fd9-cf40731367d9';
+  static const String maytapiDefaultPhoneId = '83518';
 
   // TikTok Configuration
   static const String tiktokClientKey = 'sbawd7xakgmyt8g669';
@@ -28,10 +28,13 @@ class AppConfig {
   // يحتاج TikTok نطاق مختلف لطريقة مصادقة QR
   static const List<String> tiktokPermissions = [
     'user.info.basic',
-    'video.upload'
+    'video.upload',
+    'video.publish'
   ];
 
   // Storage Keys
+  static const String tiktokVideoPrivacyLevel = 'PUBLIC';
+  static const bool isTikTokSandboxMode = true;
   static const String tokenKey = 'fb_access_token';
   static const String userDataKey = 'user_data';
   static const String selectedPagesKey = 'selected_pages';
